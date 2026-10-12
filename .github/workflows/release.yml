@@ -22,7 +22,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test
-        run: cargo test --workspace --locked --release
+        run: cargo test --workspace --locked
       - name: Build (statically linked, single file)
         run: cargo build --release --locked -p openslicer-app
       - name: Name the file
