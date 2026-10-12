@@ -4,10 +4,51 @@
 
 OpenSlicer is written entirely in Rust. It runs locally, with no account, subscription, cloud service or network connection. It is intended as an open alternative to commercial large-model splitting tools such as LuBan 3D.
 
-> **Project status: pre-alpha, design phase.**
-> This repository currently contains the project definition only. No feature listed below is implemented yet. The status table in [Roadmap](#roadmap) is updated as each feature lands, and a feature is marked **Done** only once it is implemented and covered by automated tests on real geometry. Anything not marked Done is not available.
+> **Project status: pre-alpha, working skeleton.**
+> The desktop application launches and can open, inspect, transform, measure and export STL models. **Splitting, connectors, assembly planning, OBJ/3MF support, project files and undo/redo are not implemented yet.** Their buttons are visible but disabled and labelled "Not implemented yet". See [What works today](#what-works-today) and the [Roadmap](#roadmap). A feature is marked **Done** only once it is implemented and covered by automated tests on real geometry.
+
+![OpenSlicer skeleton](docs/images/skeleton.png)
+
+*The current skeleton showing a 400 mm torus that does not fit a 220 × 220 mm printer. The screenshot was captured on Linux under software OpenGL.*
 
 OpenSlicer is an independent project. It is not affiliated with, endorsed by, or derived from the source code of LuBan 3D or any other commercial product.
+
+---
+
+## What works today
+
+Everything below is implemented and exercised by automated tests or by running the real application:
+
+- **STL import:** binary and ASCII, auto-detected by exact size (so binary files that begin with the word "solid" load correctly). NaN/infinite coordinates and truncated files are rejected with a clear error.
+- **Vertex welding on import** within 1e-6 of the model's bounding-box diagonal, so floating-point noise in exported files does not create false open edges. Original coordinates are preserved.
+- **Mesh inspection:** triangle and vertex counts, surface area, enclosed volume, open (boundary) edges, non-manifold edges, degenerate triangles, and detection of inverted normals. Back faces render orange in the viewport.
+- **3D viewport:** OpenGL renderer with flat shading, build plate with grid, build-volume wireframe, axis triad, orbit / pan / zoom, view presets, click-to-select, and a Move tool that drags a model across the plate.
+- **Transforms:** numeric position, rotation, scale, size, drop-to-plate, centre. Exports have the transform baked in (winding is corrected for mirrored models).
+- **Printer profile:** editable build volume and margin with presets, saved between sessions. Every model is checked against the usable volume and over-size is reported per axis.
+- **Export:** binary STL, written to a temporary file, **re-imported and compared** (triangle count, volume, bounds) before being atomically renamed into place. A failed export never replaces an existing file.
+- **Background jobs:** opening and exporting run on worker threads with a progress indicator and a Cancel button. Cancelling discards the result and leaves no files behind; a phase already in progress finishes first.
+- **Multiple models**, drag-and-drop of files onto the window, and command-line file arguments (`openslicer model.stl`).
+- **Forced dark theme** styled after Windows 11 / 3D Builder: command bar along the bottom, scene list on the left, properties on the right. Segoe UI is used automatically when installed.
+
+Measured on a 1,000,000-triangle (50 MB) STL under software OpenGL in a Linux container: loaded and displayed in under 3 seconds with about 260 MB resident memory, and reported the correct volume for the analytic shape.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| Ctrl+O / Ctrl+E | Open / export selected model |
+| F | Fit view to selection (or plate) |
+| 1 2 3 4 | Isometric / top / front / right view |
+| Delete | Remove selected model |
+| Esc | Back to Select tool |
+| Left drag | Orbit (or move model with the Move tool) |
+| Right / middle drag, Shift + left drag | Pan |
+| Scroll | Zoom |
+| Double-click | Fit view |
+
+### Not tested yet
+
+OpenSlicer has so far been built and run only on Linux (under Xvfb with Mesa software OpenGL). It targets Windows 11 and uses no Linux-specific code, but **it has not yet been run on Windows**, and the Windows installer and release pipeline do not exist. Window title-bar theming and the Segoe UI font path are untested.
 
 ---
 
@@ -81,23 +122,19 @@ The headline target is processing large, complex, thin-walled shells at automoti
 
 ---
 
-## Planned architecture
+## Architecture
 
-A Cargo workspace of focused crates, so the geometry engine can be used and tested without the GUI:
+A Cargo workspace, so the geometry code can be tested without the GUI. Crates that exist today:
 
 | Crate | Responsibility |
 |---|---|
-| `openslicer-core` | Math types, indexed triangle mesh, spatial acceleration structures, tolerances |
-| `openslicer-io` | STL, OBJ and 3MF readers and writers, export validation |
-| `openslicer-geom` | Mesh validation and repair diagnostics, plane cutting with cap generation, Boolean operations |
-| `openslicer-split` | Build-volume fitting, grid, tile and manual cut planning, part validation |
-| `openslicer-joints` | Connector geometry generation, placement, clearance and collision checks |
-| `openslicer-assembly` | Part numbering, mating relationships, sequencing, documentation generation |
-| `openslicer-project` | Native project format, autosave, recovery, printer profiles, manifest |
-| `openslicer-app` | Desktop GUI, viewport, job system, undo and redo, preferences |
-| `openslicer-cli` | Headless interface for scripting and for automated end-to-end testing |
+| `openslicer-core` | Indexed triangle mesh, bounds, measurements, topology checks, welding, ray picking |
+| `openslicer-io` | STL reader and writer |
+| `openslicer-app` | Desktop application (`openslicer` binary): UI, viewport renderer, background jobs, preferences |
 
-The GUI is planned to use `egui`/`eframe` on `wgpu`, which targets Windows 11 first and keeps macOS and Linux practical. Final dependency choices will be recorded in [docs/dependencies.md](docs/dependencies.md) together with their licenses.
+Planned crates as features land: `openslicer-geom` (plane cutting with capping, Booleans, self-intersection checks), `openslicer-split`, `openslicer-joints`, `openslicer-assembly`, `openslicer-project`, and `openslicer-cli` for headless use and end-to-end tests.
+
+The GUI uses `egui`/`eframe` with an OpenGL (glow) renderer. Meshes are uploaded to the GPU as indexed positions only; face normals are derived in the fragment shader, so a model costs 12 bytes per vertex plus 12 bytes per triangle of GPU memory. OpenGL 3.3 or newer is required; the app retries without anti-aliasing if the driver cannot provide 4× MSAA.
 
 ---
 
@@ -105,17 +142,18 @@ The GUI is planned to use `egui`/`eframe` on `wgpu`, which targets Windows 11 fi
 
 | Area | Status |
 |---|---|
-| Workspace, CI, license files | Planned |
-| Core mesh and math | Planned |
-| STL / OBJ / 3MF I/O | Planned |
-| Mesh validation | Planned |
+| Workspace, license files | Done |
+| CI workflow (format, clippy, tests, release build) | In progress: written, not yet run on GitHub |
+| Core mesh and math | In progress: basic mesh, measurement, welding, picking |
+| STL I/O | Done for binary and ASCII STL. OBJ and 3MF are Planned |
+| Mesh validation | In progress: open edges, non-manifold edges, degenerate triangles, inverted normals. Self-intersection is Planned |
 | Plane cutting with capping | Planned |
 | Automatic and manual splitting | Planned |
 | Connector generation | Planned |
 | Assembly planning and documentation | Planned |
-| Printer profiles | Planned |
-| Project files and recovery | Planned |
-| Desktop GUI | Planned |
+| Printer profiles | In progress: one editable profile with presets and fit checking. Named, multiple saved profiles are Planned |
+| Project files, autosave and recovery | Planned (preferences are persisted; projects are not) |
+| Desktop GUI | In progress: skeleton described above. Undo/redo, searchable settings and light theme are not planned for the skeleton |
 | Windows installer and release automation | Planned |
 | Large-scale (automotive) validation | Planned |
 
@@ -125,24 +163,23 @@ Status values are **Planned**, **In progress** and **Done**.
 
 ## Building
 
-Nothing buildable exists yet. Once the workspace lands, the intended workflow is:
+Requirements: a current stable Rust toolchain (<https://rustup.rs>). On Linux you also need the runtime libraries winit and OpenGL load dynamically: X11 or Wayland, `libxkbcommon` (and `libxkbcommon-x11` for X11), and an OpenGL 3.3 driver (Mesa works). No extra system packages are needed on Windows.
 
 ```sh
-# Requirements: a current stable Rust toolchain (https://rustup.rs)
 git clone https://github.com/CS92604/OpenSlicer.git
 cd OpenSlicer
 cargo build --release
 cargo test --workspace
-cargo run --release -p openslicer-app
+cargo run --release -p openslicer-app -- path/to/model.stl
 ```
 
-Windows 11 is the primary target. Windows installer packaging and release automation will be documented here when they exist.
+Windows installer packaging does not exist yet.
 
 ---
 
 ## License
 
-OpenSlicer is intended to be released under the **MIT OR Apache-2.0** dual license, the common choice in the Rust ecosystem. The `LICENSE-MIT` and `LICENSE-APACHE` files and the third-party license disclosure have not yet been added to the repository. They will land with the initial workspace, before any code is accepted. Until they exist, no license is granted.
+OpenSlicer is dual-licensed under **MIT OR Apache-2.0**, at your option. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE). A complete third-party dependency and license disclosure (`docs/dependencies.md`) has not been written yet; all current direct dependencies (`eframe`/`egui`, `glam`, `bytemuck`, `serde`, `thiserror`, `rfd`, `ron`) are MIT and/or Apache-2.0 licensed, but transitive dependencies have not yet been audited.
 
 ---
 
@@ -159,4 +196,4 @@ OpenSlicer is intended to be released under the **MIT OR Apache-2.0** dual licen
 
 ## Contributing
 
-Contributions will be welcome once the initial workspace exists. Priorities are geometry correctness, test coverage on real meshes, and clear error reporting.
+Contributions are welcome. Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` before opening a pull request. Priorities are geometry correctness, test coverage on real meshes, and clear error reporting.
