@@ -13,6 +13,14 @@ use std::path::Path;
 pub const PROJECT_VERSION: u32 = 1;
 pub const EXTENSION: &str = "osproj";
 
+/// Where a model sits in the scene: position of its bounding-box centre, Euler angles in degrees, scale.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelTransform {
+    pub position: [f32; 3],
+    pub rotation_deg: [f32; 3],
+    pub scale: [f32; 3],
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelEntry {
     pub name: String,
@@ -20,6 +28,9 @@ pub struct ModelEntry {
     pub file: String,
     pub sha256: String,
     pub triangles: usize,
+    /// Placement in the scene; `None` for projects written without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<ModelTransform>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,6 +95,7 @@ pub fn save(path: &Path, project: &mut Project) -> Result<(), ProjectError> {
                 file: String::new(),
                 sha256: String::new(),
                 triangles: 0,
+                transform: None,
             })
             .collect();
     }
@@ -102,6 +114,7 @@ pub fn save(path: &Path, project: &mut Project) -> Result<(), ProjectError> {
                 file,
                 sha256: format!("{:x}", Sha256::digest(&bytes)),
                 triangles: mesh.triangles.len(),
+                transform: entry.transform,
             });
         }
         project.file.models = entries;
@@ -174,8 +187,14 @@ mod tests {
         file.split.layout = Layout::Grid { divisions: [2, 1, 1], yaw_deg: 10.0 };
         file.split.connectors = Some(ConnectorSettings::new(ConnectorKind::Dovetail));
         file.models = vec![
-            ModelEntry { name: "Shell".into(), file: String::new(), sha256: String::new(), triangles: 0 },
-            ModelEntry { name: "weird/name:1".into(), file: String::new(), sha256: String::new(), triangles: 0 },
+            ModelEntry {
+                name: "Shell".into(),
+                file: String::new(),
+                sha256: String::new(),
+                triangles: 0,
+                transform: Some(ModelTransform { position: [10.0, 20.0, 30.0], rotation_deg: [0.0, 0.0, 45.0], scale: [1.0, 1.0, 2.0] }),
+            },
+            ModelEntry { name: "weird/name:1".into(), file: String::new(), sha256: String::new(), triangles: 0, transform: None },
         ];
         Project { file, meshes: vec![a, b] }
     }
@@ -194,6 +213,8 @@ mod tests {
         }
         assert_eq!(back.file.models[1].file, "models/02_weird_name_1.stl");
         assert_eq!(back.file.printer.margin, 5.0);
+        assert_eq!(back.file.models[0].transform.unwrap().rotation_deg, [0.0, 0.0, 45.0]);
+        assert_eq!(back.file.models[1].transform, None);
         let _ = std::fs::remove_file(&path);
     }
 

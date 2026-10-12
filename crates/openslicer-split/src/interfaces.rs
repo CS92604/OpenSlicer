@@ -41,6 +41,9 @@ pub fn find_interfaces(pieces: &[Piece], planes: &[Plane], tol: f64) -> Vec<Inte
     }
     let mut out = Vec::new();
     for plane in unique {
+        // Signed distances of the piece from the plane. The box corners give a quick rejection; the
+        // vertices give the exact range, which matters for oblique planes (a rotated grid) because a
+        // box corner can lie well beyond a plane that the piece itself only touches.
         let extent = |p: &Piece| {
             let (mut lo, mut hi) = (f64::MAX, f64::MIN);
             for i in 0..8 {
@@ -50,6 +53,15 @@ pub fn find_interfaces(pieces: &[Piece], planes: &[Plane], tol: f64) -> Vec<Inte
                     if i & 4 == 0 { p.bounds.min.z } else { p.bounds.max.z } as f64,
                 );
                 let s = plane.signed_distance(c);
+                lo = lo.min(s);
+                hi = hi.max(s);
+            }
+            if lo > tol || hi < -tol {
+                return (lo, hi);
+            }
+            let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+            for v in &p.mesh.vertices {
+                let s = plane.signed_distance(v.as_dvec3());
                 lo = lo.min(s);
                 hi = hi.max(s);
             }
@@ -128,6 +140,19 @@ mod tests {
         let pb = r.pieces.iter().find(|p| p.id == i.b).unwrap();
         assert!(pa.bounds.center().z < pb.bounds.center().z);
         assert!((i.area - 400.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn oblique_cut_planes_still_produce_an_interface() {
+        let mut m = Mesh::cuboid(Vec3::new(100.0, 100.0, 20.0));
+        m.translate(Vec3::new(50.0, 50.0, 10.0));
+        let normal = glam::DVec3::new(1.0, 1.0, 0.0).normalize();
+        let plane = Plane::from_point_normal(glam::DVec3::new(50.0, 50.0, 0.0), normal).unwrap();
+        let r = execute_plan(&m, &crate::plan::CutPlan::single(plane), &SplitOptions::default(), &Control::none()).unwrap();
+        assert_eq!(r.pieces.len(), 2);
+        let ifs = find_interfaces(&r.pieces, &r.planes, 1e-3);
+        assert_eq!(ifs.len(), 1, "the two halves share a 141 × 20 mm face");
+        assert!((ifs[0].area - 100.0 * 2f64.sqrt() * 20.0).abs() < 0.5, "{}", ifs[0].area);
     }
 
     #[test]

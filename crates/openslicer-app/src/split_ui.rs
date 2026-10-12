@@ -119,6 +119,43 @@ impl SplitPanel {
         })
     }
 
+    /// Loads saved settings into the panel. Layouts the panel cannot edit (bricks, explicit planes) leave it unchanged.
+    pub fn apply_settings(&mut self, s: &SplitSettings) {
+        match &s.layout {
+            Layout::Auto { search_yaw, .. } => {
+                self.layout = LayoutChoice::Auto;
+                self.search_yaw = *search_yaw;
+            }
+            Layout::Grid { divisions, .. } => {
+                self.layout = LayoutChoice::Grid;
+                self.grid = divisions.map(|d| d.clamp(1, 20));
+            }
+            Layout::Modular { spacing, .. } => {
+                self.layout = LayoutChoice::Modular;
+                for (i, axis) in spacing.iter().enumerate() {
+                    self.spacing_on[i] = axis.is_some();
+                    if let Some(v) = axis {
+                        self.spacing[i] = *v;
+                    }
+                }
+            }
+            Layout::Brick { .. } | Layout::Planes(_) => {}
+        }
+        self.allow_standing = s.orientation == OrientationPolicy::Any;
+        match &s.connectors {
+            None => self.connector = None,
+            Some(c) => {
+                self.connector = Some(c.kind);
+                self.conn_size = c.size;
+                self.conn_height = c.height;
+                self.clearance = c.clearance;
+            }
+        }
+        self.repair = s.repair_first;
+        self.nest = s.nest;
+        self.verify_assembly = s.verify_assembly;
+    }
+
     pub fn show(&mut self, ctx: &egui::Context, can_run: bool, busy: bool) -> Action {
         if !self.open {
             return Action::None;
@@ -268,6 +305,27 @@ pub fn explode_offset(piece_centre: Vec3, assembly_centre: Vec3, factor: f32) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_round_trip_through_the_panel() {
+        let panel = SplitPanel {
+            layout: LayoutChoice::Grid,
+            grid: [3, 2, 1],
+            connector: Some(ConnectorKind::Dovetail),
+            conn_size: 9.0,
+            clearance: 0.25,
+            nest: true,
+            ..Default::default()
+        };
+        let saved = panel.settings().unwrap();
+        let mut other = SplitPanel::default();
+        other.apply_settings(&saved);
+        assert_eq!(other.settings().unwrap(), saved);
+        assert_eq!(
+            (other.layout, other.grid, other.connector, other.nest),
+            (LayoutChoice::Grid, [3, 2, 1], Some(ConnectorKind::Dovetail), true)
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -73,18 +73,39 @@ impl PrinterProfile {
         Ok(())
     }
 
-    /// Common printers as starting points.
+    /// The 20 most widely used desktop FDM printers, as starting points.
+    ///
+    /// Build volumes are the manufacturers' published figures (X × Y × Z, mm), entered from memory
+    /// and not re-checked against each datasheet. Several models share a volume across variants.
+    /// Check yours in the Printer window, because firmware and bed clips change the usable area.
     pub fn presets() -> Vec<PrinterProfile> {
-        let mk = |name: &str, v: [f64; 3]| PrinterProfile { name: name.into(), build_volume: v, ..Default::default() };
-        vec![
-            mk("Creality Ender-3", [220.0, 220.0, 250.0]),
-            mk("Prusa MK4", [250.0, 210.0, 220.0]),
-            mk("Bambu Lab X1 / P1", [256.0, 256.0, 256.0]),
-            mk("Voron 2.4 350", [350.0, 350.0, 330.0]),
-            mk("Creality CR-10 S5", [500.0, 500.0, 500.0]),
-        ]
+        PRESETS.iter().map(|&(name, v)| PrinterProfile { name: name.into(), build_volume: v, ..Default::default() }).collect()
     }
 }
+
+/// (name, build volume X × Y × Z in mm)
+const PRESETS: [(&str, [f64; 3]); 20] = [
+    ("Creality Ender-3 / V2 / V3 SE", [220.0, 220.0, 250.0]),
+    ("Creality Ender-3 S1 / S1 Pro", [220.0, 220.0, 270.0]),
+    ("Creality Ender-3 V3 KE", [220.0, 220.0, 240.0]),
+    ("Creality K1 / K1C", [220.0, 220.0, 250.0]),
+    ("Creality K1 Max", [300.0, 300.0, 300.0]),
+    ("Creality CR-10 / CR-10 V3", [300.0, 300.0, 400.0]),
+    ("Creality Ender-5 Plus", [350.0, 350.0, 400.0]),
+    ("Prusa MK3S+", [250.0, 210.0, 210.0]),
+    ("Prusa MK4 / MK4S", [250.0, 210.0, 220.0]),
+    ("Prusa MINI+", [180.0, 180.0, 180.0]),
+    ("Prusa XL (single tool)", [360.0, 360.0, 360.0]),
+    ("Bambu Lab A1 mini", [180.0, 180.0, 180.0]),
+    ("Bambu Lab A1", [256.0, 256.0, 256.0]),
+    ("Bambu Lab P1P / P1S / X1C", [256.0, 256.0, 256.0]),
+    ("Elegoo Neptune 4 / 4 Pro", [225.0, 225.0, 265.0]),
+    ("Elegoo Neptune 4 Max", [420.0, 420.0, 480.0]),
+    ("Anycubic Kobra 3", [250.0, 250.0, 260.0]),
+    ("Sovol SV06", [220.0, 220.0, 250.0]),
+    ("Artillery Sidewinder X2", [300.0, 300.0, 400.0]),
+    ("Voron 2.4 (350 mm)", [350.0, 350.0, 330.0]),
+];
 
 #[cfg(test)]
 mod tests {
@@ -105,7 +126,13 @@ mod tests {
         assert!(PrinterProfile { margin: 120.0, ..Default::default() }.validate().is_err());
         assert!(PrinterProfile { min_feature: 0.0, ..Default::default() }.validate().is_err());
         assert!(PrinterProfile { joint_clearance: f64::NAN, ..Default::default() }.validate().is_err());
-        assert!(PrinterProfile::presets().iter().all(|p| p.validate().is_ok()));
+        let presets = PrinterProfile::presets();
+        assert_eq!(presets.len(), 20);
+        assert!(presets.iter().all(|p| p.validate().is_ok()));
+        let mut names: Vec<_> = presets.iter().map(|p| p.name.as_str()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), 20, "preset names must be unique");
     }
 
     #[test]

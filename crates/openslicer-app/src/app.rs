@@ -2,7 +2,8 @@ use crate::camera::{ray_plane_z, Camera, ViewPreset};
 use crate::gl_view::{self, DrawModel, FlatBatch, Renderer};
 use crate::icons::Icon;
 use crate::jobs::{self, Job, JobEvent};
-use crate::model::Model;
+use crate::model::{Model, Transform};
+use crate::session::{self, Autosaver, Snapshot};
 use crate::settings::{Fit, Preferences, PrinterProfile};
 use crate::split_ui::{self, Action, SplitPanel};
 use crate::theme;
@@ -11,10 +12,14 @@ use eframe::egui::{
     self, vec2, Align2, Color32, CornerRadius, FontId, Key, KeyboardShortcut, Modifiers, PointerButton, Rect, RichText, Sense, Stroke, Ui,
 };
 use glam::{Vec2, Vec3};
+use openslicer_core::{Mesh, MeshStats};
+use openslicer_project::stock;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const PREFS_KEY: &str = "openslicer.preferences.v1";
+const SPLIT_KEY: &str = "openslicer.split.v1";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -64,12 +69,22 @@ pub struct OpenSlicerApp {
     parts: Vec<(u64, Vec3)>,
     /// Source model hidden while its parts are shown.
     hidden_source: Option<u64>,
+    autosaver: Autosaver,
+    /// An autosave from the previous session that the user has not yet restored or discarded.
+    restore_prompt: Option<PathBuf>,
+    project_path: Option<PathBuf>,
+    show_stock: bool,
 }
 
 impl OpenSlicerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Vec<PathBuf>) -> Self {
         theme::apply(&cc.egui_ctx);
         let prefs = cc.storage.and_then(|s| eframe::get_value::<Preferences>(s, PREFS_KEY)).unwrap_or_default();
+        let mut split = SplitPanel::default();
+        if let Some(saved) = cc.storage.and_then(|s| eframe::get_value::<openslicer_project::settings::SplitSettings>(s, SPLIT_KEY)) {
+            split.apply_settings(&saved);
+        }
+        let restore_prompt = if initial.is_empty() { session::autosave_path().filter(|p| p.is_file()) } else { None };
         Self {
             prefs,
             camera: Camera::default(),
@@ -87,9 +102,13 @@ impl OpenSlicerApp {
             lock_scale: true,
             move_drag: None,
             pending_fit: false,
-            split: SplitPanel::default(),
+            split,
             parts: Vec::new(),
             hidden_source: None,
+            autosaver: Autosaver::default(),
+            restore_prompt,
+            project_path: None,
+            show_stock: false,
         }
     }
 
@@ -109,6 +128,10 @@ impl OpenSlicerApp {
             return;
         }
         if let Some(path) = self.queue.pop_front() {
+            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(openslicer_project::project::EXTENSION)) {
+                self.open_project_file(path);
+                return;
+            }
             if let Some(dir) = path.parent() {
                 self.prefs.last_directory = Some(dir.to_string_lossy().into_owned());
             }
@@ -158,6 +181,146 @@ impl OpenSlicerApp {
         }
     }
 
+    /// Puts a mesh in the scene. With `announce`, reports its health in the status bar. Returns false for empty meshes.
+    fn add_model(
+        &mut self,
+        name: String,
+        mesh: Arc<Mesh>,
+        stats: Arc<MeshStats>,
+        source: Option<PathBuf>,
+        transform: Option<Transform>,
+        announce: bool,
+    ) -> bool {
+        let id = self.next_id;
+        let Some(mut model) = Model::new(id, name.clone(), mesh.clone(), stats.clone(), source) else {
+            self.error = Some(ErrorInfo { title: format!("Could not open {name}"), detail: "The file contains no geometry.".into() });
+            return false;
+        };
+        if let Some(t) = transform {
+            model.transform = t;
+        }
+        self.next_id += 1;
+        self.renderer.upload(id, mesh);
+        self.models.push(model);
+        self.selected = Some(id);
+        self.pending_fit = true;
+        if announce {
+            let (msg, level) = if stats.is_inverted() {
+                (
+                    format!(
+                        "Opened {name}: {} triangles. Normals are INVERTED (negative volume); slicing would treat the model as empty space",
+                        stats.triangle_count
+                    ),
+                    Level::Warn,
+                )
+            } else if stats.is_watertight() {
+                (format!("Opened {name}: {} triangles, watertight", stats.triangle_count), Level::Ok)
+            } else {
+                (
+                    format!(
+                        "Opened {name}: {} triangles. Mesh is NOT watertight ({} open edges, {} non-manifold edges, {} degenerate triangles)",
+                        stats.triangle_count, stats.boundary_edges, stats.non_manifold_edges, stats.degenerate_triangles
+                    ),
+                    Level::Warn,
+                )
+            };
+            self.set_status(msg, level);
+        }
+        true
+    }
+
+    fn import_stock(&mut self, id: &str) {
+        let Some(mesh) = stock::build(id) else { return };
+        let name = stock::STOCK.iter().find(|s| s.id == id).map_or(id, |s| s.name).to_owned();
+        let stats = Arc::new(mesh.stats());
+        self.add_model(name, Arc::new(mesh), stats, None, None, true);
+    }
+
+    // ---- projects and autosave -----------------------------------------------
+
+    fn snapshot(&self) -> Snapshot {
+        let name = self
+            .project_path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map_or_else(|| "Untitled".to_owned(), |s| s.to_string_lossy().into_owned());
+        let part_ids: Vec<u64> = self.parts.iter().map(|p| p.0).collect();
+        let split = self.split.settings().unwrap_or_default();
+        Snapshot::capture(&name, &self.prefs.printer, split, self.models.iter().filter(|m| !part_ids.contains(&m.id)))
+    }
+
+    fn autosave_tick(&mut self) {
+        let snap = self.snapshot();
+        self.autosaver.tick(snap, session::autosave_path());
+        if let Some(e) = self.autosaver.last_error.take() {
+            self.set_status(format!("Autosave failed: {e}"), Level::Warn);
+        }
+    }
+
+    fn apply_restored(&mut self, r: session::Restored) {
+        self.clear_split();
+        for m in self.models.drain(..) {
+            self.renderer.remove(m.id);
+        }
+        self.selected = None;
+        self.prefs.printer = r.printer;
+        self.split.apply_settings(&r.split);
+        let count = r.models.len();
+        for (name, mesh, transform) in r.models {
+            let stats = Arc::new(mesh.stats());
+            self.add_model(name, mesh, stats, None, transform, false);
+        }
+        self.set_status(format!("Restored {count} model{}", if count == 1 { "" } else { "s" }), Level::Ok);
+    }
+
+    fn open_project_file(&mut self, path: PathBuf) {
+        match session::read(&path) {
+            Ok(r) => {
+                self.apply_restored(r);
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.set_status(format!("Opened project {name}"), Level::Ok);
+                self.project_path = Some(path);
+            }
+            Err(e) => {
+                self.error = Some(ErrorInfo { title: "Could not open the project".into(), detail: e.to_string() });
+            }
+        }
+    }
+
+    fn open_project_dialog(&mut self) {
+        if let Some(path) = self.dialog().add_filter("OpenSlicer projects", &["osproj"]).set_title("Open project").pick_file() {
+            self.open_project_file(path);
+        }
+    }
+
+    fn save_project(&mut self, save_as: bool) {
+        if self.models.is_empty() {
+            self.set_status("Nothing to save: the scene is empty.", Level::Warn);
+            return;
+        }
+        let path = match (&self.project_path, save_as) {
+            (Some(p), false) => p.clone(),
+            _ => match self
+                .dialog()
+                .add_filter("OpenSlicer projects", &["osproj"])
+                .set_title("Save project")
+                .set_file_name("project.osproj")
+                .save_file()
+            {
+                Some(p) => p.with_extension(openslicer_project::project::EXTENSION),
+                None => return,
+            },
+        };
+        match self.snapshot().write(&path) {
+            Ok(()) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.set_status(format!("Saved {name}"), Level::Ok);
+                self.project_path = Some(path);
+            }
+            Err(e) => self.error = Some(ErrorInfo { title: "Could not save the project".into(), detail: e.to_string() }),
+        }
+    }
+
     fn handle_job(&mut self, ctx: &egui::Context) {
         let Some(job) = self.job.as_mut() else {
             self.start_next_load(ctx);
@@ -168,34 +331,7 @@ impl OpenSlicerApp {
         match event {
             JobEvent::Loaded { path, mesh, stats } => {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "model".into());
-                let id = self.next_id;
-                match Model::new(id, name.clone(), mesh.clone(), stats.clone(), Some(path)) {
-                    Some(model) => {
-                        self.next_id += 1;
-                        self.renderer.upload(id, mesh);
-                        self.models.push(model);
-                        self.selected = Some(id);
-                        self.pending_fit = true;
-                        let (msg, level) = if stats.is_inverted() {
-                            (format!("Opened {name}: {} triangles. Normals are INVERTED (negative volume); slicing would treat the model as empty space", stats.triangle_count), Level::Warn)
-                        } else if stats.is_watertight() {
-                            (format!("Opened {name}: {} triangles, watertight", stats.triangle_count), Level::Ok)
-                        } else {
-                            (
-                                format!(
-                                    "Opened {name}: {} triangles. Mesh is NOT watertight ({} open edges, {} non-manifold edges, {} degenerate triangles)",
-                                    stats.triangle_count, stats.boundary_edges, stats.non_manifold_edges, stats.degenerate_triangles
-                                ),
-                                Level::Warn,
-                            )
-                        };
-                        self.set_status(msg, level);
-                    }
-                    None => {
-                        self.error =
-                            Some(ErrorInfo { title: format!("Could not open {name}"), detail: "The file contains no geometry.".into() });
-                    }
-                }
+                self.add_model(name, mesh, stats, Some(path), None, true);
             }
             JobEvent::Exported { path, summary } => {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -327,10 +463,20 @@ impl OpenSlicerApp {
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let mut open = false;
         let mut export = false;
+        let (mut save, mut open_project) = (false, false);
         ctx.input_mut(|i| {
+            // The more specific shortcut first, so Ctrl+Shift+O is not taken as Ctrl+O.
+            open_project = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::O));
+            save = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::S));
             open = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::O));
             export = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::E));
         });
+        if open_project {
+            self.open_project_dialog();
+        }
+        if save {
+            self.save_project(false);
+        }
         if open {
             self.open_dialog(ctx);
         }
@@ -397,6 +543,24 @@ impl OpenSlicerApp {
                     ui.close();
                     self.open_dialog(&ctx);
                 }
+                if ui.button("Import stock model…").clicked() {
+                    ui.close();
+                    self.show_stock = true;
+                }
+                ui.separator();
+                if ui.add(egui::Button::new("Open project…").shortcut_text("Ctrl+Shift+O")).clicked() {
+                    ui.close();
+                    self.open_project_dialog();
+                }
+                if ui.add_enabled(!self.models.is_empty(), egui::Button::new("Save project").shortcut_text("Ctrl+S")).clicked() {
+                    ui.close();
+                    self.save_project(false);
+                }
+                if ui.add_enabled(!self.models.is_empty(), egui::Button::new("Save project as…")).clicked() {
+                    ui.close();
+                    self.save_project(true);
+                }
+                ui.separator();
                 let can_export = self.selected.is_some() && self.job.is_none();
                 if ui.add_enabled(can_export, egui::Button::new("Export selected as STL…").shortcut_text("Ctrl+E")).clicked() {
                     ui.close();
@@ -451,11 +615,14 @@ impl OpenSlicerApp {
         let busy = self.job.is_some();
         ui.horizontal_centered(|ui| {
             // Centre the command groups.
-            let group_w = 78.0 * 12.0 + 8.0 * 11.0;
+            let group_w = 78.0 * 13.0 + 8.0 * 12.0;
             ui.add_space(((ui.available_width() - group_w) / 2.0).max(8.0));
             ui.spacing_mut().item_spacing.x = 4.0;
             if ribbon_button(ui, Icon::Open, "Open", !busy, false, "Open a model (Ctrl+O)") {
                 self.open_dialog(&ctx);
+            }
+            if ribbon_button(ui, Icon::Cube, "Stock", !busy, self.show_stock, "Import a built-in sample model") {
+                self.show_stock = !self.show_stock;
             }
             if ribbon_button(ui, Icon::Export, "Export", has_sel && !busy, false, "Export the selected model as binary STL (Ctrl+E)") {
                 self.export_dialog(&ctx);
@@ -720,22 +887,100 @@ impl OpenSlicerApp {
                 caption(ui, format!("Usable volume: {:.0} × {:.0} × {:.0} mm", u.x, u.y, u.z));
                 ui.add_space(6.0);
                 ui.label(RichText::new("Presets").color(theme::TEXT_SECONDARY));
-                for (name, v) in [
-                    ("Creality Ender-3 (220 × 220 × 250)", [220.0, 220.0, 250.0]),
-                    ("Prusa MK4 (250 × 210 × 220)", [250.0, 210.0, 220.0]),
-                    ("Bambu Lab X1 / P1 (256 × 256 × 256)", [256.0, 256.0, 256.0]),
-                    ("Voron 2.4 350 (350 × 350 × 330)", [350.0, 350.0, 330.0]),
-                ] {
-                    if ui.button(name).clicked() {
-                        *p = PrinterProfile { name: name.split(" (").next().unwrap().to_owned(), build_volume: v, margin: p.margin };
+                let current = p.name.clone();
+                egui::ScrollArea::vertical().max_height(260.0).id_salt("printer-presets").show(ui, |ui| {
+                    for preset in openslicer_project::profile::PrinterProfile::presets() {
+                        let [x, y, z] = preset.build_volume;
+                        let label = format!("{}  ({x:.0} × {y:.0} × {z:.0})", preset.name);
+                        if ui.selectable_label(current == preset.name, label).clicked() {
+                            *p =
+                                PrinterProfile { name: preset.name, build_volume: preset.build_volume.map(|v| v as f32), margin: p.margin };
+                        }
                     }
-                }
+                });
+                caption(ui, "Common printers, from published specifications. Check yours: bed clips and firmware change the usable area.");
             });
         self.show_printer = open;
     }
 
+    fn stock_window(&mut self, ctx: &egui::Context) {
+        if !self.show_stock {
+            return;
+        }
+        let mut open = true;
+        let mut chosen: Option<&'static str> = None;
+        egui::Window::new("Import stock model")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(420.0);
+                caption(ui, "Sample models larger than a print bed, generated inside the app. Use them to try the split, connector and export workflow.");
+                for model in &stock::STOCK {
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(model.name).size(16.0).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if widgets::primary_button(ui, "Import").clicked() {
+                                chosen = Some(model.id);
+                            }
+                        });
+                    });
+                    ui.label(model.description);
+                }
+            });
+        if let Some(id) = chosen {
+            self.import_stock(id);
+            open = false;
+        }
+        self.show_stock = open;
+    }
+
+    fn restore_window(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.restore_prompt.clone() else { return };
+        let age = std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+        let mut decision: Option<bool> = None;
+        egui::Modal::new(egui::Id::new("restore-modal")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.label(RichText::new("Restore your last session?").size(18.0).strong());
+            ui.add_space(8.0);
+            let when = match age {
+                Some(a) if a.as_secs() < 90 => "less than a minute ago".to_owned(),
+                Some(a) if a.as_secs() < 5400 => format!("{} minutes ago", a.as_secs() / 60),
+                Some(a) if a.as_secs() < 172_800 => format!("{} hours ago", a.as_secs() / 3600),
+                Some(a) => format!("{} days ago", a.as_secs() / 86_400),
+                None => "earlier".to_owned(),
+            };
+            ui.label(format!("OpenSlicer autosaved your models, their positions, the printer and the split settings {when}. Split results are not saved; run the split again."));
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::primary_button(ui, "Restore").clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("Start empty").clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        if let Some(restore) = decision {
+            self.restore_prompt = None;
+            if restore {
+                self.open_project_file(path);
+                // The autosave is not the user's own project file.
+                self.project_path = None;
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
         self.printer_window(ctx);
+        self.stock_window(ctx);
+        self.restore_window(ctx);
         self.split_window(ctx);
         let mut close_error = false;
         if let Some(err) = &self.error {
@@ -1066,6 +1311,25 @@ impl eframe::App for OpenSlicerApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, PREFS_KEY, &self.prefs);
+        if let Ok(settings) = self.split.settings() {
+            eframe::set_value(storage, SPLIT_KEY, &settings);
+        }
+        // Do not overwrite the previous session's autosave until the user has decided about it.
+        if self.restore_prompt.is_none() {
+            self.autosave_tick();
+        }
+    }
+
+    fn auto_save_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(10)
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.restore_prompt.is_none() {
+            self.autosaver.finish();
+            self.autosave_tick();
+            self.autosaver.finish();
+        }
     }
 }
 

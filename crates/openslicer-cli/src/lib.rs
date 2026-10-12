@@ -645,7 +645,7 @@ fn dispatch(cmd: Command, io: &mut Io) -> Res {
         Command::Verify { dir } => verify(&dir, io),
         Command::Printers => {
             for p in PrinterProfile::presets() {
-                io.say(format!("{:<24} {} × {} × {} mm", p.name, p.build_volume[0], p.build_volume[1], p.build_volume[2]));
+                io.say(format!("{:<34} {} × {} × {} mm", p.name, p.build_volume[0], p.build_volume[1], p.build_volume[2]));
             }
             Ok(EXIT_OK)
         }

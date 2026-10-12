@@ -70,7 +70,7 @@ fn batch_split_writes_one_folder_per_model_and_reports_failures() {
     block(&a, Vec3::new(300.0, 100.0, 50.0));
     block(&b, Vec3::new(100.0, 400.0, 50.0));
     let out = d.join("out");
-    let (code, text, _) = run(&["split", a.to_str().unwrap(), b.to_str().unwrap(), "-o", out.to_str().unwrap(), "--printer", "ender"]);
+    let (code, text, _) = run(&["split", a.to_str().unwrap(), b.to_str().unwrap(), "-o", out.to_str().unwrap(), "--printer", "ender-3 v3 ke"]);
     assert_eq!(code, 0, "{text}");
     assert!(out.join("a/manifest.json").is_file() && out.join("b/manifest.json").is_file());
     // A missing input fails that model but the others still run, and the exit code says so.

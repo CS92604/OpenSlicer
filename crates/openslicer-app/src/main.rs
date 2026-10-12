@@ -6,6 +6,7 @@ mod gl_view;
 mod icons;
 mod jobs;
 mod model;
+mod session;
 mod settings;
 mod split_ui;
 mod theme;

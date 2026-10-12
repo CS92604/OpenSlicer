@@ -65,6 +65,98 @@ fn from_manifold(m: &Manifold) -> Mesh {
     Mesh::new(vertices, triangles)
 }
 
+/// Merges vertices that sit at the same position when they are the two ends of an edge of a zero-area triangle
+/// (the kernel can emit such duplicate vertices). Triangles that collapse are dropped.
+fn merge_coincident_vertices(m: &mut Mesh) -> usize {
+    let mut parent: Vec<u32> = (0..m.vertices.len() as u32).collect();
+    fn root(parent: &mut [u32], mut v: u32) -> u32 {
+        while parent[v as usize] != v {
+            parent[v as usize] = parent[parent[v as usize] as usize];
+            v = parent[v as usize];
+        }
+        v
+    }
+    let mut merged = 0;
+    for t in &m.triangles {
+        let [a, b, c] = t.map(|i| m.vertices[i as usize].as_dvec3());
+        if (b - a).cross(c - a).length() * 0.5 >= 1e-12 {
+            continue;
+        }
+        for (u, v) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if u != v && (m.vertices[u as usize] - m.vertices[v as usize]).length() < 1e-6 {
+                let (ru, rv) = (root(&mut parent, u), root(&mut parent, v));
+                if ru != rv {
+                    parent[rv as usize] = ru;
+                    merged += 1;
+                }
+            }
+        }
+    }
+    if merged > 0 {
+        for t in &mut m.triangles {
+            *t = t.map(|v| root(&mut parent, v));
+        }
+        m.triangles.retain(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
+    }
+    merged
+}
+
+/// Removes zero-area triangles whose three vertices are collinear, by flipping the long edge they share with
+/// their neighbour. The covered surface is unchanged exactly, because the third vertex lies on that edge.
+/// Flips that would create a duplicate edge are skipped; whatever remains is caught by the caller's checks.
+fn remove_flat_triangles(m: &mut Mesh) -> usize {
+    use std::collections::{HashMap, HashSet};
+    let flat = |m: &Mesh, t: &[u32; 3]| {
+        let [a, b, c] = t.map(|i| m.vertices[i as usize].as_dvec3());
+        (b - a).cross(c - a).length() * 0.5 < 1e-12
+    };
+    let mut removed = 0;
+    for _ in 0..8 {
+        let flats: Vec<usize> = (0..m.triangles.len()).filter(|&i| flat(m, &m.triangles[i])).collect();
+        if flats.is_empty() {
+            break;
+        }
+        let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
+        for (i, t) in m.triangles.iter().enumerate() {
+            for k in 0..3 {
+                directed.insert((t[k], t[(k + 1) % 3]), i);
+            }
+        }
+        let mut touched: HashSet<usize> = HashSet::new();
+        let mut flips: Vec<(usize, usize, [u32; 3], [u32; 3])> = Vec::new();
+        for f in flats {
+            if touched.contains(&f) {
+                continue;
+            }
+            let t = m.triangles[f];
+            // The longest edge p -> q; b is the vertex between them.
+            let len = |k: usize| (m.vertices[t[(k + 1) % 3] as usize] - m.vertices[t[k] as usize]).length();
+            let k = (0..3).max_by(|&a, &b| len(a).total_cmp(&len(b))).unwrap();
+            let (p, q, b) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+            let Some(&n) = directed.get(&(q, p)) else { continue };
+            if n == f || touched.contains(&n) || flat(m, &m.triangles[n]) {
+                continue;
+            }
+            let x = *m.triangles[n].iter().find(|&&v| v != p && v != q).unwrap();
+            if directed.contains_key(&(b, x)) || directed.contains_key(&(x, b)) {
+                continue;
+            }
+            touched.insert(f);
+            touched.insert(n);
+            flips.push((f, n, [b, p, x], [x, q, b]));
+        }
+        if flips.is_empty() {
+            break;
+        }
+        for (f, n, t1, t2) in flips {
+            m.triangles[f] = t1;
+            m.triangles[n] = t2;
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Runs a Boolean operation on two closed solids and verifies the result.
 /// An empty result (for example the intersection of disjoint solids) is returned as an empty mesh.
 pub fn boolean(a: &Mesh, b: &Mesh, op: BoolOp) -> Result<(Mesh, BoolReport), BoolError> {
@@ -79,7 +171,12 @@ pub fn boolean(a: &Mesh, b: &Mesh, op: BoolOp) -> Result<(Mesh, BoolReport), Boo
             BoolOp::Intersection => OpType::Intersect,
         };
         match compute_boolean(&ma, &mb, kind) {
-            Ok(m) => Ok(from_manifold(&m)),
+            Ok(m) => {
+                let mut mesh = from_manifold(&m);
+                merge_coincident_vertices(&mut mesh);
+                remove_flat_triangles(&mut mesh);
+                Ok(mesh)
+            }
             // The kernel reports an empty result as an error.
             Err(e) if e.contains("empty") => Ok(Mesh::default()),
             Err(e) => Err(BoolError::Kernel(e)),
@@ -122,6 +219,22 @@ pub fn boolean(a: &Mesh, b: &Mesh, op: BoolOp) -> Result<(Mesh, BoolReport), Boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flat_triangles_are_flipped_away_without_changing_the_solid() {
+        // A cuboid whose bottom edge 0-1 carries an extra vertex b, closed by a flat triangle.
+        let mut m = Mesh::cuboid(Vec3::new(10.0, 20.0, 30.0));
+        let b = m.vertices.len() as u32;
+        m.vertices.push((m.vertices[0] + m.vertices[1]) * 0.5);
+        m.triangles.retain(|t| *t != [0, 2, 1]);
+        m.triangles.extend([[0, 2, b], [b, 2, 1], [1, 0, b]]);
+        let before = m.stats();
+        assert_eq!((before.boundary_edges, before.degenerate_triangles), (0, 1), "{before:?}");
+        assert_eq!(remove_flat_triangles(&mut m), 1);
+        let after = m.stats();
+        assert!(after.is_watertight(), "{after:?}");
+        assert!((after.signed_volume - before.signed_volume).abs() < 1e-9 && (after.surface_area - before.surface_area).abs() < 1e-9);
+    }
     use crate::tests_support::*;
 
     fn cube_at(c: Vec3, size: f32) -> Mesh {
