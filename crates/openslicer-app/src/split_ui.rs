@@ -6,6 +6,7 @@ use crate::widgets::caption;
 use eframe::egui::{self, vec2, Align2, RichText};
 use glam::Vec3;
 use openslicer_joints::settings::{ConnectorKind, ConnectorSettings};
+use openslicer_project::labels::{LabelMode, LabelOptions};
 use openslicer_project::pipeline::SplitOutcome;
 use openslicer_project::profile::PrinterProfile as ProjectPrinter;
 use openslicer_project::settings::{Layout, SplitSettings};
@@ -34,6 +35,9 @@ pub struct SplitPanel {
     pub repair: bool,
     pub nest: bool,
     pub verify_assembly: bool,
+    pub label_mode: LabelMode,
+    pub label_height: f64,
+    pub label_depth: f64,
     /// Latest finished split.
     pub result: Option<Arc<SplitOutcome>>,
     /// Name of the model that was split.
@@ -58,6 +62,9 @@ impl Default for SplitPanel {
             repair: true,
             nest: false,
             verify_assembly: false,
+            label_mode: LabelMode::Off,
+            label_height: 8.0,
+            label_depth: 0.6,
             result: None,
             source_name: String::new(),
             explode: 0.0,
@@ -116,6 +123,7 @@ impl SplitPanel {
             repair_first: self.repair,
             nest: self.nest,
             verify_assembly: self.verify_assembly,
+            labels: LabelOptions { mode: self.label_mode, height: self.label_height, depth: self.label_depth },
         })
     }
 
@@ -154,6 +162,9 @@ impl SplitPanel {
         self.repair = s.repair_first;
         self.nest = s.nest;
         self.verify_assembly = s.verify_assembly;
+        self.label_mode = s.labels.mode;
+        self.label_height = s.labels.height;
+        self.label_depth = s.labels.depth;
     }
 
     pub fn show(&mut self, ctx: &egui::Context, can_run: bool, busy: bool) -> Action {
@@ -231,6 +242,24 @@ impl SplitPanel {
                 ui.checkbox(&mut self.repair, "Repair the model first");
                 ui.checkbox(&mut self.nest, "Arrange parts on build plates");
                 ui.checkbox(&mut self.verify_assembly, "Check the assembly for overlaps (slow)");
+                ui.add_space(4.0);
+                ui.label(RichText::new("Part labels").color(theme::TEXT_SECONDARY));
+                ui.horizontal(|ui| {
+                    for mode in [LabelMode::Off, LabelMode::Inset, LabelMode::Outset] {
+                        ui.selectable_value(&mut self.label_mode, mode, mode.label());
+                    }
+                });
+                if self.label_mode != LabelMode::Off {
+                    egui::Grid::new("label-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                        ui.label("Text height");
+                        ui.add(egui::DragValue::new(&mut self.label_height).range(3.0..=40.0).speed(0.2).suffix(" mm"));
+                        ui.end_row();
+                        ui.label("Relief depth");
+                        ui.add(egui::DragValue::new(&mut self.label_depth).range(0.2..=3.0).speed(0.05).suffix(" mm"));
+                        ui.end_row();
+                    });
+                    caption(ui, "Part number and assembly step, for example P07-3 (part 7, third to assemble). Parts with no flat area for it are listed.");
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.add_enabled(can_run && !busy, egui::Button::new("Split")).on_disabled_hover_text("Select a model first").clicked()

@@ -65,8 +65,20 @@ pub fn comb_joint(lower: &Mesh, upper: &Mesh, frame: &Frame, region: &[Polygon],
     if w <= 2.0 * p.clearance + 1.0 {
         return Err(format!("the seam is {span:.1} mm long, too short for finger strips with a {:.2} mm clearance", p.clearance));
     }
+    // Strip boundaries: the outer ones reach past the seam (so they never graze its extreme vertices) and the
+    // inner ones are nudged off the regular grid, so they do not land exactly on mesh vertices, which would
+    // create near-coincident points that fail verification after export.
+    let edge = |k: usize| -> f64 {
+        if k == 0 {
+            lo - 1.0
+        } else if k == strips {
+            hi + 1.0
+        } else {
+            lo + (k as f64 + 0.0173) * w
+        }
+    };
     let even: Vec<usize> = (0..strips).step_by(2).collect();
-    let fingers: Vec<(f64, f64)> = even.iter().map(|&k| (lo + k as f64 * w, lo + (k + 1) as f64 * w)).collect();
+    let fingers: Vec<(f64, f64)> = even.iter().map(|&k| (edge(k), edge(k + 1))).collect();
     let cutters: Vec<(f64, f64)> = fingers.iter().map(|&(a, b)| (a - p.clearance, b + p.clearance)).collect();
 
     let finger_solid = prisms(frame, region, angle, &fingers, p.length)?;
@@ -132,8 +144,8 @@ mod tests {
         assert_eq!(r.fingers, 3);
         assert!((r.lower.stats().signed_volume - (vol(&a) + r.moved)).abs() < 1e-3);
         assert!(r.removed > r.moved, "the recess is larger than the finger by the clearance");
-        // Each finger is 20 x 2 x 8 mm.
-        assert!((r.moved - 3.0 * 20.0 * 2.0 * 8.0).abs() < 1e-2, "{}", r.moved);
+        // Each finger is about 20 x 2 x 8 mm (the strip edges are nudged off the regular grid).
+        assert!((r.moved / (3.0 * 20.0 * 2.0 * 8.0) - 1.0).abs() < 0.02, "{}", r.moved);
         // Assembled, the pieces must not overlap.
         let overlap = boolean(&r.lower, &r.upper, BoolOp::Intersection).unwrap().0;
         assert!(vol(&overlap) < 1e-3, "pieces overlap by {} mm³", vol(&overlap));

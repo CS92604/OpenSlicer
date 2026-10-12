@@ -55,6 +55,9 @@ pub struct SplitSettings {
     pub nest: bool,
     /// Run the (slow) interpenetration check on the finished assembly.
     pub verify_assembly: bool,
+    /// Engrave or raise the part number and assembly step on each part.
+    #[serde(default)]
+    pub labels: crate::labels::LabelOptions,
 }
 
 impl Default for SplitSettings {
@@ -67,6 +70,7 @@ impl Default for SplitSettings {
             repair_first: true,
             nest: false,
             verify_assembly: false,
+            labels: Default::default(),
         }
     }
 }

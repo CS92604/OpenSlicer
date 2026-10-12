@@ -230,3 +230,34 @@ fn stock_models_can_be_listed_written_and_split() {
     assert_eq!(run(&["verify", out.to_str().unwrap()]).0, 0);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn thin_shell_with_labels_writes_a_csv_and_verifies() {
+    let d = dir("labels");
+    let dome = d.join("dome.stl");
+    assert_eq!(run(&["stock", "dome", "-o", dome.to_str().unwrap()]).0, 0);
+    let out = d.join("out");
+    let (code, text, _) = run(&[
+        "split",
+        dome.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--printer",
+        "prusa mk4",
+        "--connector",
+        "pin",
+        "--labels",
+        "inset",
+    ]);
+    assert_eq!(code, 0, "thin walls are joined by finger joints, so nothing is left unconnected: {text}");
+    let csv = std::fs::read_to_string(out.join("dome_assembly.csv")).unwrap();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert!(lines.len() >= 3, "{csv}");
+    assert!(lines[1].contains("P0") && lines[1].contains("-1"), "first step carries its label: {}", lines[1]);
+    assert!(csv.contains("Finger joint"), "{csv}");
+    assert_eq!(run(&["verify", out.to_str().unwrap()]).0, 0);
+    // A bad mode is a usage-style failure, not a silent default.
+    let (code, text, _) = run(&["split", dome.to_str().unwrap(), "-o", d.join("o2").to_str().unwrap(), "--labels", "sideways"]);
+    assert_ne!(code, 0, "{text}");
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -73,3 +73,60 @@ fn thin_curved_shells_are_joined_by_finger_joints() {
         assert!(gaps > 0.0 && gaps < 0.05 * out.source.signed_volume, "{id}: clearance gaps {gaps:.1} mm³");
     }
 }
+
+#[test]
+fn labels_are_engraved_or_raised_and_verified_on_real_parts() {
+    use openslicer_project::labels::{LabelMode, LabelOptions};
+    for (id, prefix, mode) in [
+        ("wing", "Prusa MK4", LabelMode::Inset),
+        ("wing", "Prusa MK4", LabelMode::Outset),
+        ("dome", "Prusa MK4", LabelMode::Inset),
+        ("dome", "Prusa MK4", LabelMode::Outset),
+        ("panel", "Prusa MK4", LabelMode::Inset),
+    ] {
+        let settings = SplitSettings {
+            connectors: Some(ConnectorSettings::new(ConnectorKind::Pin)),
+            labels: LabelOptions { mode, ..Default::default() },
+            ..Default::default()
+        };
+        let out = run_split(&build(id).unwrap(), &printer(prefix), &settings, &Control::none()).unwrap();
+        let placed = out.labels.iter().filter(|l| l.placed).count();
+        eprintln!("{id} {mode:?}: {placed}/{} labelled; problems {:?}", out.labels.len(), out.problems);
+        for l in &out.labels {
+            eprintln!("   {} placed={} {}", l.text, l.placed, l.note);
+        }
+        assert_eq!(out.labels.len(), out.pieces.len());
+        assert!(out.pieces.iter().all(|p| p.mesh.stats().is_watertight()), "{id}: parts must stay closed");
+        assert!(out.problems.is_empty(), "{id}: {:?}", out.problems);
+    }
+}
+
+/// Regression: finger-joint parts used to contain near-duplicate vertices that the importer welded into
+/// non-manifold edges, so the export verification (re-import) failed. Every stock model must export and verify,
+/// with labels and the assembly CSV.
+#[test]
+fn every_stock_model_exports_and_verifies_after_a_round_trip() {
+    use openslicer_project::export::{export, verify_export, ExportOptions};
+    use openslicer_project::labels::{LabelMode, LabelOptions};
+    for (id, mode) in [("dome", LabelMode::Inset), ("panel", LabelMode::Outset), ("wing", LabelMode::Inset)] {
+        let printer = printer("Prusa MK4");
+        let settings = SplitSettings {
+            connectors: Some(ConnectorSettings::new(ConnectorKind::Pin)),
+            labels: LabelOptions { mode, ..Default::default() },
+            nest: true,
+            ..Default::default()
+        };
+        let out = run_split(&build(id).unwrap(), &printer, &settings, &Control::none()).unwrap();
+        assert!(out.problems.is_empty(), "{id}: {:?}", out.problems);
+        let dir = std::env::temp_dir().join(format!("openslicer-stock-export-{id}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rep = export(&out, &printer, &ExportOptions { model_name: id.into(), ..Default::default() }, &dir, &Control::none())
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert!(rep.verification.is_ok(), "{id}: {:?}", rep.verification);
+        assert!(verify_export(&dir).is_ok());
+        let csv = std::fs::read_to_string(dir.join(format!("{id}_assembly.csv"))).unwrap();
+        assert_eq!(csv.lines().count(), 1 + out.pieces.len());
+        assert!(rep.manifest.parts.iter().all(|p| p.label.is_some()), "{id}: every part carries its label");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

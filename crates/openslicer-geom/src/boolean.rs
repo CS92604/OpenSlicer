@@ -101,6 +101,39 @@ fn merge_coincident_vertices(m: &mut Mesh) -> usize {
     merged
 }
 
+/// Collapses every edge shorter than `tol` (the kernel can emit duplicate or almost-duplicate vertices), so the
+/// mesh means the same thing before and after a file round trip, where the importer welds such vertices.
+/// Triangles that collapse are dropped. Callers verify the result is still a closed solid.
+fn collapse_short_edges(m: &mut Mesh, tol: f64) -> usize {
+    let mut parent: Vec<u32> = (0..m.vertices.len() as u32).collect();
+    fn root(parent: &mut [u32], mut v: u32) -> u32 {
+        while parent[v as usize] != v {
+            parent[v as usize] = parent[parent[v as usize] as usize];
+            v = parent[v as usize];
+        }
+        v
+    }
+    let mut merged = 0;
+    for t in &m.triangles {
+        for (u, v) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if u != v && (m.vertices[u as usize] - m.vertices[v as usize]).as_dvec3().length() < tol {
+                let (ru, rv) = (root(&mut parent, u), root(&mut parent, v));
+                if ru != rv {
+                    parent[rv as usize] = ru;
+                    merged += 1;
+                }
+            }
+        }
+    }
+    if merged > 0 {
+        for t in &mut m.triangles {
+            *t = t.map(|v| root(&mut parent, v));
+        }
+        m.triangles.retain(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
+    }
+    merged
+}
+
 /// Removes zero-area triangles whose three vertices are collinear, by flipping the long edge they share with
 /// their neighbour. The covered surface is unchanged exactly, because the third vertex lies on that edge.
 /// Flips that would create a duplicate edge are skipped; whatever remains is caught by the caller's checks.
@@ -175,6 +208,14 @@ pub fn boolean(a: &Mesh, b: &Mesh, op: BoolOp) -> Result<(Mesh, BoolReport), Boo
                 let mut mesh = from_manifold(&m);
                 merge_coincident_vertices(&mut mesh);
                 remove_flat_triangles(&mut mesh);
+                if let Some(b) = mesh.bounds() {
+                    // Twice the importer's weld distance (1e-6 of the bounding-box diagonal). Kept only when the
+                    // collapsed mesh is still a closed solid; otherwise the original goes on to the usual checks.
+                    let mut collapsed = mesh.clone();
+                    if collapse_short_edges(&mut collapsed, 2e-6 * b.size().as_dvec3().length()) > 0 && collapsed.stats().is_watertight() {
+                        mesh = collapsed;
+                    }
+                }
                 Ok(mesh)
             }
             // The kernel reports an empty result as an error.

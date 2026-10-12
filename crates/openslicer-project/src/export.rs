@@ -56,6 +56,8 @@ pub struct ExportOptions {
     /// Also write one file per build plate when the outcome was nested.
     pub write_plates: bool,
     pub write_instructions: bool,
+    /// Also write the assembly steps as a CSV table (for spreadsheets and kitting lists).
+    pub write_csv: bool,
 }
 
 impl Default for ExportOptions {
@@ -67,6 +69,7 @@ impl Default for ExportOptions {
             print_orientation: false,
             write_plates: true,
             write_instructions: true,
+            write_csv: true,
         }
     }
 }
@@ -200,6 +203,9 @@ pub struct Manifest {
     pub connectors: Vec<ConnectorEntry>,
     pub assembly: Vec<StepEntry>,
     pub instructions: Option<String>,
+    /// The assembly steps as CSV.
+    #[serde(default)]
+    pub assembly_csv: Option<String>,
     pub validation: Validation,
 }
 
@@ -356,7 +362,10 @@ fn export_into(
     let model = sanitize(&opts.model_name);
     let ext = opts.format.extension();
     let fits = |p: &Piece| outcome.fits.iter().find(|f| f.piece_id == p.id && f.name == p.name).is_none_or(|f| f.fits);
-    let (parts, mut files) = write_parts(&all, &fits, usable, opts, dir, ctl)?;
+    let (mut parts, mut files) = write_parts(&all, &fits, usable, opts, dir, ctl)?;
+    for p in &mut parts {
+        p.label = outcome.labels.iter().find(|l| l.placed && l.piece_id == p.id && p.kind == "piece").map(|l| l.text.clone());
+    }
 
     // Plates.
     let mut plates = Vec::new();
@@ -409,6 +418,15 @@ fn export_into(
         None
     };
 
+    let assembly_csv = if opts.write_csv {
+        let file = format!("{model}_assembly.csv");
+        write_atomic(&dir.join(&file), assembly_csv(outcome, &steps, &parts, &plates).as_bytes())?;
+        files.push(file.clone());
+        Some(file)
+    } else {
+        None
+    };
+
     let manifest = Manifest {
         manifest_version: MANIFEST_VERSION,
         generator: format!("OpenSlicer {}", env!("CARGO_PKG_VERSION")),
@@ -447,6 +465,7 @@ fn export_into(
             .collect(),
         assembly: steps.iter().map(step_entry).collect(),
         instructions,
+        assembly_csv,
         validation: Validation {
             valid: outcome.is_valid(),
             problems: outcome.problems.clone(),
@@ -457,6 +476,90 @@ fn export_into(
         },
     };
     finish_export(manifest, files, dir, ctl)
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_owned()
+    }
+}
+
+/// The assembly sequence as CSV, one row per step (then one per loose part), in assembly order.
+/// Lists the joints for each part, its size and volume, the build plate it is on and the label on it.
+pub fn assembly_csv(outcome: &SplitOutcome, steps: &[AssemblyStep], parts: &[PartEntry], plates: &[PlateEntry]) -> String {
+    let header = [
+        "step",
+        "part",
+        "type",
+        "file",
+        "label_on_part",
+        "label_status",
+        "attaches_to",
+        "contact_area_mm2",
+        "connectors",
+        "connector_types",
+        "loose_parts",
+        "starts_subassembly",
+        "size_x_mm",
+        "size_y_mm",
+        "size_z_mm",
+        "volume_cm3",
+        "print_plate",
+        "fits_printer",
+    ];
+    let mut out = header.join(",");
+    out.push('\n');
+    let plate_of = |name: &str| plates.iter().find(|p| p.parts.iter().any(|q| q == name)).map(|p| p.index.to_string()).unwrap_or_default();
+    let kind_of = |id: &str| outcome.connectors.iter().find(|c| c.id == id).map_or("", |c| c.kind.label());
+    let mut row = |step: String, name: &str, kind: &str, attach: String, area: String, conns: &[String], loose: &[String], sub: String| {
+        let part = parts.iter().find(|p| p.name == name);
+        let label = outcome.labels.iter().find(|l| outcome.pieces.iter().any(|p| p.name == name && p.id == l.piece_id));
+        let mut kinds: Vec<&str> = conns.iter().map(|c| kind_of(c)).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        let fields = [
+            step,
+            name.to_owned(),
+            kind.to_owned(),
+            part.map(|p| p.file.clone()).unwrap_or_default(),
+            label.filter(|l| l.placed).map(|l| l.text.clone()).unwrap_or_default(),
+            label.map(|l| if l.placed { format!("placed: {}", l.note) } else { format!("not placed: {}", l.note) }).unwrap_or_default(),
+            attach,
+            area,
+            conns.join(" "),
+            kinds.join(" + "),
+            loose.join(" "),
+            sub,
+            part.map(|p| format!("{:.1}", p.size[0])).unwrap_or_default(),
+            part.map(|p| format!("{:.1}", p.size[1])).unwrap_or_default(),
+            part.map(|p| format!("{:.1}", p.size[2])).unwrap_or_default(),
+            part.map(|p| format!("{:.3}", p.volume_mm3 / 1000.0)).unwrap_or_default(),
+            plate_of(name),
+            part.map(|p| if p.fits_printer { "yes" } else { "no" }.to_owned()).unwrap_or_default(),
+        ];
+        out.push_str(&fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
+        out.push('\n');
+    };
+    for s in steps {
+        let attach = s.attach_to.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(" ");
+        let area = s.attach_to.iter().map(|(_, _, a)| format!("{a:.0}")).collect::<Vec<_>>().join(" ");
+        row(
+            s.number.to_string(),
+            &s.part_name,
+            "piece",
+            attach,
+            area,
+            &s.connectors,
+            &s.loose,
+            if s.starts_subassembly { "yes" } else { "no" }.into(),
+        );
+    }
+    for l in &outcome.loose {
+        row(String::new(), &l.name, "loose", String::new(), String::new(), &[], &[], String::new());
+    }
+    out
 }
 
 /// SVG of a flat part's outline (millimetres, even-odd fill so holes cut out).
@@ -554,6 +657,7 @@ fn export_fab_into(
         connectors: Vec::new(),
         assembly: Vec::new(),
         instructions: None,
+        assembly_csv: None,
         validation: Validation {
             valid: rep.is_valid(),
             problems: rep.problems.clone(),
@@ -736,7 +840,7 @@ pub fn verify_export(dir: &Path) -> VerifyReport {
             Err(e) => rep.problems.push(e.to_string()),
         }
     }
-    if let Some(f) = &manifest.instructions {
+    for f in manifest.instructions.iter().chain(manifest.assembly_csv.iter()) {
         rep.files_checked += 1;
         if !dir.join(f).is_file() {
             rep.problems.push(format!("{f}: missing"));
@@ -787,6 +891,15 @@ mod tests {
         }
         assert!(dir.join(MANIFEST_NAME).is_file() && dir.join("Test_Model_instructions.html").is_file());
         assert!(!rep.manifest.plates.is_empty() && dir.join(&rep.manifest.plates[0].file).is_file());
+        // The assembly CSV: header, one row per step, one per loose part; quoted where needed.
+        let csv = std::fs::read_to_string(dir.join("Test_Model_assembly.csv")).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert!(lines[0].starts_with("step,part,type,file,label_on_part"), "{}", lines[0]);
+        assert_eq!(lines.len(), 1 + out.pieces.len() + out.loose.len());
+        assert!(lines[1].starts_with("1,"), "{}", lines[1]);
+        assert_eq!(rep.manifest.assembly_csv.as_deref(), Some("Test_Model_assembly.csv"));
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
         assert_eq!(rep.manifest.connectors.len(), out.connectors.len());
         assert_eq!(rep.manifest.assembly.len(), out.pieces.len());
         assert!(rep.manifest.validation.valid, "{:?}", rep.manifest.validation.problems);

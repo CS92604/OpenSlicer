@@ -15,6 +15,7 @@ use openslicer_geom::repair::{repair, RepairOptions};
 use openslicer_io::{load_mesh, save_mesh};
 use openslicer_joints::settings::{ConnectorKind, ConnectorSettings};
 use openslicer_project::export::{export, export_fab, verify_export, ExportFormat, ExportOptions};
+use openslicer_project::labels::{LabelMode, LabelOptions};
 use openslicer_project::pipeline::{run_split, SplitOutcome};
 use openslicer_project::profile::PrinterProfile;
 use openslicer_project::settings::{Layout, PlaneSpec, SplitSettings};
@@ -44,6 +45,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Show size, volume and mesh health of one or more models.
     Info(InfoArgs),
@@ -297,6 +299,18 @@ struct SplitArgs {
     /// Skip the HTML assembly instructions.
     #[arg(long)]
     no_instructions: bool,
+    /// Skip the assembly CSV table.
+    #[arg(long)]
+    no_csv: bool,
+    /// Put the part number and assembly step on each part: `inset` (engraved) or `outset` (raised).
+    #[arg(long, value_name = "MODE")]
+    labels: Option<String>,
+    /// Label character height in mm.
+    #[arg(long, default_value_t = 8.0)]
+    label_height: f64,
+    /// Label relief depth in mm.
+    #[arg(long, default_value_t = 0.6)]
+    label_depth: f64,
     /// Split settings saved as JSON; replaces the layout and connector options above.
     #[arg(long, value_name = "FILE")]
     settings: Option<PathBuf>,
@@ -374,6 +388,16 @@ impl SplitArgs {
             repair_first: !self.no_repair,
             nest: self.nest,
             verify_assembly: self.verify_assembly,
+            labels: LabelOptions {
+                mode: match self.labels.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                    None | Some("off") | Some("none") => LabelMode::Off,
+                    Some("inset") | Some("engrave") | Some("engraved") => LabelMode::Inset,
+                    Some("outset") | Some("raised") | Some("emboss") => LabelMode::Outset,
+                    Some(other) => return Err(format!("unknown label mode '{other}'; use inset, outset or off")),
+                },
+                height: self.label_height,
+                depth: self.label_depth,
+            },
         })
     }
 }
@@ -812,8 +836,12 @@ fn split(a: SplitArgs, io: &mut Io) -> Res {
             let mesh = load(input)?;
             let outcome = io.with_control(|c| run_split(&mesh, &printer, &settings, c)).map_err(|e| format!("{name}: {e}"))?;
             summarize_split(&name, &outcome, io);
-            let opts =
-                ExportOptions { print_orientation: a.print_orientation, write_instructions: !a.no_instructions, ..a.out.options(&name) };
+            let opts = ExportOptions {
+                print_orientation: a.print_orientation,
+                write_instructions: !a.no_instructions,
+                write_csv: !a.no_csv,
+                ..a.out.options(&name)
+            };
             let report = io.with_control(|c| export(&outcome, &printer, &opts, &dir, c)).map_err(|e| format!("{name}: {e}"))?;
             io.say(format!("  wrote {} files to {} (verified by re-import)", report.files.len(), dir.display()));
             Ok(if outcome.is_valid() { EXIT_OK } else { EXIT_PROBLEMS })

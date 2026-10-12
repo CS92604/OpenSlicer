@@ -60,6 +60,8 @@ pub struct SplitOutcome {
     pub fits: Vec<PartFit>,
     pub nest: Option<NestResult>,
     pub assembly_problems: Vec<String>,
+    /// One record per labelled piece when labels were requested.
+    pub labels: Vec<crate::labels::LabelRecord>,
     pub notes: Vec<String>,
     /// Everything that means the result cannot be trusted. Empty means every check that was run passed.
     pub problems: Vec<String>,
@@ -268,6 +270,20 @@ pub fn run_split(mesh: &Mesh, printer: &PrinterProfile, settings: &SplitSettings
         }
     }
 
+    // 6b. Part labels.
+    let mut labels = Vec::new();
+    if settings.labels.mode != crate::labels::LabelMode::Off {
+        settings.labels.validate().map_err(PipelineError::Invalid)?;
+        ctl.report(0.93, "Labelling the parts");
+        let steps = crate::assembly::plan_assembly(&pieces, &interfaces, &connectors, &loose);
+        labels = crate::labels::apply_labels(&mut pieces, &interfaces, &steps, &settings.labels, &ctl.sub(0.93, 0.95))?;
+        let placed = labels.iter().filter(|l| l.placed).count();
+        notes.push(format!("labels: {placed} of {} parts labelled ({})", labels.len(), settings.labels.mode.label().to_lowercase()));
+        for l in labels.iter().filter(|l| !l.placed) {
+            notes.push(format!("labels: no label on {}: {}", l.text.split('-').next().unwrap_or(&l.text), l.note));
+        }
+    }
+
     // 7. Machine fit (with connectors in place) and nesting.
     ctl.report(0.95, "Verifying the parts fit the printer");
     let all: Vec<Piece> = pieces.iter().chain(loose.iter()).cloned().collect();
@@ -298,6 +314,7 @@ pub fn run_split(mesh: &Mesh, printer: &PrinterProfile, settings: &SplitSettings
         fits,
         nest: nested,
         assembly_problems: Vec::new(),
+        labels,
         notes,
         problems,
     })
