@@ -4,8 +4,8 @@
 
 OpenSlicer is written entirely in Rust. It runs locally, with no account, subscription, cloud service or network connection. It is intended as an open alternative to commercial large-model splitting tools such as LuBan 3D.
 
-> **Project status: pre-alpha, working skeleton.**
-> The desktop application launches and can open, inspect, transform, measure and export STL models. **Splitting, connectors, assembly planning, OBJ/3MF support, project files and undo/redo are not implemented yet.** Their buttons are visible but disabled and labelled "Not implemented yet". See [What works today](#what-works-today) and the [Roadmap](#roadmap). A feature is marked **Done** only once it is implemented and covered by automated tests on real geometry.
+> **Project status: pre-alpha.**
+> The geometry engines and the command-line tool are implemented and tested on real generated geometry: cutting, auto-tiling, connectors, nesting, alternative construction methods, Booleans, repair, hollowing, image tools, export with manifest and verification, project files. The desktop app is still the earlier skeleton: it opens, inspects, transforms and exports STL models, but **it does not yet drive the splitting engines; use `openslicer-cli` for those**. Nothing has been run on Windows yet. See [docs/known-limitations.md](docs/known-limitations.md).
 
 ![OpenSlicer skeleton](docs/images/skeleton.png)
 
@@ -31,6 +31,37 @@ Everything below is implemented and exercised by automated tests or by running t
 - **Forced dark theme** styled after Windows 11 / 3D Builder: command bar along the bottom, scene list on the left, properties on the right. Segoe UI is used automatically when installed.
 
 Measured on a 1,000,000-triangle (50 MB) STL under software OpenGL in a Linux container: loaded and displayed in under 3 seconds with about 260 MB resident memory, and reported the correct volume for the analytic shape.
+
+## Command-line tool (`openslicer-cli`)
+
+All engines are available headless and are what the automated end-to-end tests exercise.
+
+```sh
+openslicer-cli printers                                   # built-in printer presets
+openslicer-cli info model.stl --printer ender             # size, volume, mesh health, fits?
+openslicer-cli repair broken.stl fixed.stl                # weld, orient, fill small holes
+openslicer-cli split big.stl -o out --connector pin --nest --verify-assembly
+openslicer-cli split a.stl b.obj -o out --layout grid --grid 3,2,1 --format 3mf   # batch
+openslicer-cli split big.stl -o out --layout planes --plane 0,0,120:0,0,1
+openslicer-cli verify out                                 # re-import and check an export
+openslicer-cli fab stack|interlock|blocks|plates|wireframe|relief model.stl -o out
+openslicer-cli image lithophane|relief|halftone photo.png -o out --width 120
+openslicer-cli hollow solid.stl hollow.stl --wall 3 --drain-holes 2
+openslicer-cli boolean union|subtract|intersect a.stl b.stl out.stl
+```
+
+Exit codes: `0` success, `1` failure, `2` usage error, `3` finished but the result has problems (parts that do not fit, failed checks). A result with problems is still written so it can be inspected. A split writes one file per part (STL, OBJ or 3MF), optional per-plate files, `*_instructions.html` (parts list, connector table, exploded overview and a diagram per step) and `manifest.json` with SHA-256 hashes, validation results and the assembly sequence. Every export is re-imported and compared before it is reported as done; a failed or cancelled export leaves no files behind.
+
+What the engines do (all verified by tests; see the crate tests for the exact claims):
+
+- **Cutting:** exact plane cuts with capping, verified watertight and volume-conserving; grid, modular, brick and arbitrary-plane layouts; automatic tiling that searches grid rotation and axis assignment so every piece fits the printer including connector allowance; separation of disconnected solids; merging of sliver pieces.
+- **Connectors:** pin, dowel, dovetail, tab-and-slot, puzzle, lip (follows the cut boundary), lap joint, terrace, pyramid and claw. Placement is automatic, clearance is configurable, thin walls shrink the connector or skip with an explanation. Each connector is validated against the real pieces with Booleans, and the finished assembly can be checked for interpenetration.
+- **Machine-aware output:** build volume and margin, fit check of every part in every orientation, print-orientation export, rectangle nesting onto plates.
+- **Other construction methods:** stacked layers (with SVG outlines for laser/CNC), interlocking ribs, blocks, plates, wireframe, depth relief.
+- **Mesh operations:** union, subtraction, intersection (via `boolmesh`), repair, hollowing with drain holes.
+- **Image tools:** lithophane, image relief, halftone plate.
+
+---
 
 ### Keyboard shortcuts
 
@@ -124,17 +155,21 @@ The headline target is processing large, complex, thin-walled shells at automoti
 
 ## Architecture
 
-A Cargo workspace, so the geometry code can be tested without the GUI. Crates that exist today:
+A Cargo workspace, so the geometry code is tested without the GUI.
 
 | Crate | Responsibility |
 |---|---|
-| `openslicer-core` | Indexed triangle mesh, bounds, measurements, topology checks, welding, ray picking |
-| `openslicer-io` | STL reader and writer |
-| `openslicer-app` | Desktop application (`openslicer` binary): UI, viewport renderer, background jobs, preferences |
+| `openslicer-core` | Indexed triangle mesh, bounds, measurements, topology checks, cancel/progress control |
+| `openslicer-io` | STL, OBJ and 3MF readers and writers, atomic file writes |
+| `openslicer-geom` | Plane cutting with capping, 2D polygons, Booleans, repair, hollowing, BVH |
+| `openslicer-split` | Cut plans, layouts, auto-tiling, interfaces, piece reduction, orientation, nesting |
+| `openslicer-joints` | Connector generation, placement and validation |
+| `openslicer-fab` | Alternative construction methods and image tools |
+| `openslicer-project` | Printer profiles, the split pipeline, assembly planning and instructions, export and manifest, `.osproj` project files |
+| `openslicer-cli` | Command-line tool |
+| `openslicer-app` | Desktop application (`openslicer` binary) |
 
-Planned crates as features land: `openslicer-geom` (plane cutting with capping, Booleans, self-intersection checks), `openslicer-split`, `openslicer-joints`, `openslicer-assembly`, `openslicer-project`, and `openslicer-cli` for headless use and end-to-end tests.
-
-The GUI uses `egui`/`eframe` with an OpenGL (glow) renderer. Meshes are uploaded to the GPU as indexed positions only; face normals are derived in the fragment shader, so a model costs 12 bytes per vertex plus 12 bytes per triangle of GPU memory. OpenGL 3.3 or newer is required; the app retries without anti-aliasing if the driver cannot provide 4× MSAA.
+The GUI uses `egui`/`eframe` with an OpenGL (glow) renderer. Meshes are uploaded as indexed positions only; face normals come from the fragment shader. OpenGL 3.3 or newer is required.
 
 ---
 
@@ -142,20 +177,19 @@ The GUI uses `egui`/`eframe` with an OpenGL (glow) renderer. Meshes are uploaded
 
 | Area | Status |
 |---|---|
-| Workspace, license files | Done |
-| CI workflow (format, clippy, tests, release build) | In progress: written, not yet run on GitHub |
-| Core mesh and math | In progress: basic mesh, measurement, welding, picking |
-| STL I/O | Done for binary and ASCII STL. OBJ and 3MF are Planned |
-| Mesh validation | In progress: open edges, non-manifold edges, degenerate triangles, inverted normals. Self-intersection is Planned |
-| Plane cutting with capping | Planned |
-| Automatic and manual splitting | Planned |
-| Connector generation | Planned |
-| Assembly planning and documentation | Planned |
-| Printer profiles | In progress: one editable profile with presets and fit checking. Named, multiple saved profiles are Planned |
-| Project files, autosave and recovery | Planned (preferences are persisted; projects are not) |
-| Desktop GUI | In progress: skeleton described above. Undo/redo, searchable settings and light theme are not planned for the skeleton |
-| Windows installer and release automation | Planned |
-| Large-scale (automotive) validation | Planned |
+| Cutting, auto-tiling, layouts, interfaces | Done (tested on real geometry) |
+| Connectors (10 kinds) | Done (tested); print-fit tolerances need real-printer validation |
+| Alternative construction methods, image tools | Done (tested) |
+| Booleans, repair, hollowing | Done (tested) |
+| Machine fit verification, nesting, batch | Done (CLI) |
+| Export, manifest, verification, project files | Done (library and CLI) |
+| STL/OBJ/3MF I/O | Done |
+| CLI | Done |
+| Desktop GUI integration of the engines | Planned: the GUI is the STL viewer skeleton |
+| Undo/redo, light theme, searchable settings, autosave in the GUI | Planned |
+| CI workflow | Written, not yet run on GitHub |
+| Windows build, installer, release automation | Planned, untested on Windows |
+| Large-scale (automotive) validation | Planned; not yet attempted on a real hardtop-scale model |
 
 Status values are **Planned**, **In progress** and **Done**.
 
@@ -170,7 +204,8 @@ git clone https://github.com/CS92604/OpenSlicer.git
 cd OpenSlicer
 cargo build --release
 cargo test --workspace
-cargo run --release -p openslicer-app -- path/to/model.stl
+cargo run --release -p openslicer-app -- path/to/model.stl   # viewer
+cargo run --release -p openslicer-cli -- split path/to/model.stl -o out --connector pin
 ```
 
 Windows installer packaging does not exist yet.
@@ -179,18 +214,15 @@ Windows installer packaging does not exist yet.
 
 ## License
 
-OpenSlicer is dual-licensed under **MIT OR Apache-2.0**, at your option. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE). A complete third-party dependency and license disclosure (`docs/dependencies.md`) has not been written yet; all current direct dependencies (`eframe`/`egui`, `glam`, `bytemuck`, `serde`, `thiserror`, `rfd`, `ron`) are MIT and/or Apache-2.0 licensed, but transitive dependencies have not yet been audited.
+OpenSlicer is dual-licensed under **MIT OR Apache-2.0**, at your option. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE). See [docs/dependencies.md](docs/dependencies.md) for direct dependencies and licenses. Note that `boolmesh` (used for Booleans) is MPL-2.0; transitive dependencies have not been audited.
 
 ---
 
-## Documentation (planned)
+## Documentation
 
-- `docs/user-guide.md`: using the application
-- `docs/developer-guide.md`: architecture and contributing
-- `docs/project-format.md`: native project file format
-- `docs/export-formats.md`: exported files and manifest schema
-- `docs/dependencies.md`: dependencies and their licenses
-- `docs/known-limitations.md`: honest limitations and measured performance
+- [docs/dependencies.md](docs/dependencies.md): dependencies and their licenses
+- [docs/known-limitations.md](docs/known-limitations.md): honest limitations and measured performance
+- [docs/export-formats.md](docs/export-formats.md): exported files, manifest and project file formats
 
 ---
 

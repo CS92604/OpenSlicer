@@ -1,0 +1,28 @@
+[package]
+name = "openslicer-cli"
+description = "Command-line interface for OpenSlicer: split, connect, fabricate, repair, hollow and verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "openslicer-cli"
+path = "src/main.rs"
+
+[dependencies]
+openslicer-core.workspace = true
+openslicer-io.workspace = true
+openslicer-geom.workspace = true
+openslicer-split.workspace = true
+openslicer-joints.workspace = true
+openslicer-fab.workspace = true
+openslicer-project.workspace = true
+glam.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+image.workspace = true
+glam.workspace = true

@@ -53,6 +53,26 @@ impl ConnectorKind {
         }
     }
 
+    /// Short lowercase name used on the command line and in files.
+    pub fn slug(self) -> &'static str {
+        match self {
+            ConnectorKind::Pin => "pin",
+            ConnectorKind::Dowel => "dowel",
+            ConnectorKind::Dovetail => "dovetail",
+            ConnectorKind::TabSlot => "tab",
+            ConnectorKind::Puzzle => "puzzle",
+            ConnectorKind::Lip => "lip",
+            ConnectorKind::LapJoint => "lap",
+            ConnectorKind::Terrace => "terrace",
+            ConnectorKind::Pyramid => "pyramid",
+            ConnectorKind::Claw => "claw",
+        }
+    }
+
+    pub fn from_slug(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.slug().eq_ignore_ascii_case(s))
+    }
+
     /// Placed at discrete points (as opposed to spanning the whole interface).
     pub fn is_point_based(self) -> bool {
         !matches!(self, ConnectorKind::Lip | ConnectorKind::LapJoint | ConnectorKind::Terrace)
