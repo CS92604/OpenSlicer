@@ -65,6 +65,14 @@ enum Command {
     Verify { dir: PathBuf },
     /// List the built-in printer presets.
     Printers,
+    /// Write a built-in sample model (dome, wing, panel) as an STL, or list them.
+    Stock {
+        /// Model name (dome, wing or panel). Omit to list them.
+        name: Option<String>,
+        /// Output file.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Args, Clone, Default)]
@@ -643,6 +651,20 @@ fn dispatch(cmd: Command, io: &mut Io) -> Res {
         Command::Hollow(a) => hollow_cmd(a, io),
         Command::Boolean(a) => boolean_cmd(a, io),
         Command::Verify { dir } => verify(&dir, io),
+        Command::Stock { name, output } => {
+            use openslicer_project::stock;
+            let (Some(name), Some(output)) = (name, output) else {
+                for m in &stock::STOCK {
+                    io.say(format!("{:<6} {} - {}", m.id, m.name, m.description));
+                }
+                return Ok(EXIT_OK);
+            };
+            let mesh = stock::build(&name).ok_or_else(|| format!("no stock model '{name}'; run `stock` to list them"))?;
+            save_mesh(&output, &mesh).map_err(|e| format!("{}: {e}", output.display()))?;
+            let size = mesh.stats().bounds.map(|b| b.size()).unwrap_or_default();
+            io.say(format!("wrote {} ({} triangles, {:.0} × {:.0} × {:.0} mm)", output.display(), mesh.triangles.len(), size.x, size.y, size.z));
+            Ok(EXIT_OK)
+        }
         Command::Printers => {
             for p in PrinterProfile::presets() {
                 io.say(format!("{:<34} {} × {} × {} mm", p.name, p.build_volume[0], p.build_volume[1], p.build_volume[2]));

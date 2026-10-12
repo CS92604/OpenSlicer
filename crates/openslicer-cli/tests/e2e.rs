@@ -211,3 +211,20 @@ fn usage_errors_and_listings() {
     assert!(text.contains("Ender-3") && text.contains("Voron"));
     assert_eq!(run(&["--version"]).0, 0);
 }
+
+#[test]
+fn stock_models_can_be_listed_written_and_split() {
+    let d = dir("stock");
+    let (code, text, _) = run(&["stock"]);
+    assert_eq!(code, 0);
+    assert!(text.contains("dome") && text.contains("wing") && text.contains("panel"), "{text}");
+    let wing = d.join("wing.stl");
+    let (code, text, _) = run(&["stock", "wing", "-o", wing.to_str().unwrap()]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(run(&["stock", "nope", "-o", d.join("x.stl").to_str().unwrap()]).0, 1);
+    let out = d.join("out");
+    let (code, text, _) = run(&["split", wing.to_str().unwrap(), "-o", out.to_str().unwrap(), "--printer", "prusa mk4", "--connector", "pin"]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(run(&["verify", out.to_str().unwrap()]).0, 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
