@@ -5,8 +5,13 @@
 //! but its result is discarded and no files are left behind.
 
 use eframe::egui;
+use openslicer_core::control::Control;
 use openslicer_core::{Mesh, MeshStats};
 use openslicer_io::stl;
+use openslicer_project::export::{export, ExportOptions};
+use openslicer_project::pipeline::{run_split, PipelineError, SplitOutcome};
+use openslicer_project::profile::PrinterProfile as ProjectPrinter;
+use openslicer_project::settings::SplitSettings;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +22,7 @@ pub enum JobEvent {
     Progress(String),
     Loaded { path: PathBuf, mesh: Arc<Mesh>, stats: Arc<MeshStats> },
     Exported { path: PathBuf, summary: String },
+    Split { source: String, outcome: Box<SplitOutcome> },
     Cancelled,
     Failed { title: String, detail: String },
 }
@@ -51,7 +57,7 @@ impl Job {
     }
 }
 
-fn spawn(ctx: &egui::Context, label: String, work: impl FnOnce(&dyn Fn(String), &AtomicBool) -> JobEvent + Send + 'static) -> Job {
+fn spawn(ctx: &egui::Context, label: String, work: impl FnOnce(&(dyn Fn(String) + Sync), &AtomicBool) -> JobEvent + Send + 'static) -> Job {
     let (tx, rx) = channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let (flag, ctx2) = (cancel.clone(), ctx.clone());
@@ -75,6 +81,36 @@ fn spawn(ctx: &egui::Context, label: String, work: impl FnOnce(&dyn Fn(String), 
         })
         .expect("failed to spawn worker thread");
     Job { label, progress: String::new(), cancel, rx }
+}
+
+/// Runs the split pipeline (repair, cut, connectors, fit checks) on `mesh`, which must already be in world coordinates.
+pub fn spawn_split(ctx: &egui::Context, name: String, mesh: Mesh, printer: ProjectPrinter, settings: SplitSettings) -> Job {
+    spawn(ctx, format!("Splitting {name}"), move |progress, cancel| {
+        let report = |f: f32, what: &str| progress(format!("{what} ({:.0}%)", f * 100.0));
+        let ctl = Control::new(cancel, &report);
+        match run_split(&mesh, &printer, &settings, &ctl) {
+            Ok(outcome) => JobEvent::Split { source: name, outcome: Box::new(outcome) },
+            Err(PipelineError::Cancelled(_)) => JobEvent::Cancelled,
+            Err(e) => JobEvent::Failed { title: format!("Could not split {name}"), detail: e.to_string() },
+        }
+    })
+}
+
+/// Writes the parts, instructions and manifest of a finished split into `dir`, then re-imports and checks them.
+pub fn spawn_export_split(ctx: &egui::Context, outcome: Arc<SplitOutcome>, printer: ProjectPrinter, model: String, dir: PathBuf) -> Job {
+    spawn(ctx, format!("Exporting {model} parts"), move |progress, cancel| {
+        let report = |f: f32, what: &str| progress(format!("{what} ({:.0}%)", f * 100.0));
+        let ctl = Control::new(cancel, &report);
+        let opts = ExportOptions { model_name: model.clone(), print_orientation: false, ..Default::default() };
+        match export(&outcome, &printer, &opts, &dir, &ctl) {
+            Ok(r) => JobEvent::Exported {
+                path: dir,
+                summary: format!("{} files written and verified by re-import; open manifest.json for details", r.files.len()),
+            },
+            Err(openslicer_project::export::ExportError::Cancelled(_)) => JobEvent::Cancelled,
+            Err(e) => JobEvent::Failed { title: "Could not export the parts".into(), detail: e.to_string() },
+        }
+    })
 }
 
 pub fn spawn_load(ctx: &egui::Context, path: PathBuf) -> Job {

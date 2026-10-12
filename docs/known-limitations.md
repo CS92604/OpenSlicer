@@ -3,7 +3,7 @@
 Honest status as of this commit.
 
 ## Not done
-- **The desktop GUI does not yet use the splitting, connector, fabrication or export engines.** It is the STL viewer skeleton. Use `openslicer-cli`. Undo/redo, a light theme, searchable settings and project autosave in the GUI are not implemented (the project file *format* and loader exist in `openslicer-project`).
+- **The desktop GUI covers splitting, connectors, results and export only.** Alternative construction methods, image tools, hollowing, Booleans, repair, per-connector editing, manual cut-plane placement and assembly step playback are CLI-only or missing. The exploded-view slider was implemented but could not be exercised under the automated Xvfb session, so it is untested. Undo/redo, a light theme, searchable settings and project autosave in the GUI are not implemented (the project file *format* and loader exist in `openslicer-project`).
 - **Windows has never been built or run.** No installer exists. The GUI was only run on Linux under software OpenGL.
 - **CI** (`.github/workflows/ci.yml`) is written but has not run on GitHub.
 - **No real-printer validation.** Connector clearances are presets, not measured fits. Print a test joint first.

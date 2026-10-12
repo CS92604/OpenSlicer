@@ -5,7 +5,7 @@
 OpenSlicer is written entirely in Rust. It runs locally, with no account, subscription, cloud service or network connection. It is intended as an open alternative to commercial large-model splitting tools such as LuBan 3D.
 
 > **Project status: pre-alpha.**
-> The geometry engines and the command-line tool are implemented and tested on real generated geometry: cutting, auto-tiling, connectors, nesting, alternative construction methods, Booleans, repair, hollowing, image tools, export with manifest and verification, project files. The desktop app is still the earlier skeleton: it opens, inspects, transforms and exports STL models, but **it does not yet drive the splitting engines; use `openslicer-cli` for those**. Nothing has been run on Windows yet. See [docs/known-limitations.md](docs/known-limitations.md).
+> The geometry engines and the command-line tool are implemented and tested on real generated geometry: cutting, auto-tiling, connectors, nesting, alternative construction methods, Booleans, repair, hollowing, image tools, export with manifest and verification, project files. The desktop app opens STL/OBJ/3MF, inspects and transforms models, and has a **Split window** (automatic, grid or every-N-mm layouts; connector type, size and clearance; nesting; assembly check) that runs the same pipeline as the CLI in a background job, shows the parts in the viewport with a pass/fail summary, and exports the parts, instructions and verified manifest. Alternative construction methods, image tools, hollowing and Booleans are CLI-only for now. Nothing has been run on Windows yet. See [docs/known-limitations.md](docs/known-limitations.md).
 
 ![OpenSlicer skeleton](docs/images/skeleton.png)
 
@@ -185,7 +185,7 @@ The GUI uses `egui`/`eframe` with an OpenGL (glow) renderer. Meshes are uploaded
 | Export, manifest, verification, project files | Done (library and CLI) |
 | STL/OBJ/3MF I/O | Done |
 | CLI | Done |
-| Desktop GUI integration of the engines | Planned: the GUI is the STL viewer skeleton |
+| Desktop GUI: split, connectors, results, export | Done for the Split window (verified by running the app on Linux under software OpenGL). Exploded-view slider not verified interactively. Fab methods, image tools, hollow and Booleans are not in the GUI |
 | Undo/redo, light theme, searchable settings, autosave in the GUI | Planned |
 | CI workflow | Written, not yet run on GitHub |
 | Windows build, installer, release automation | Planned, untested on Windows |

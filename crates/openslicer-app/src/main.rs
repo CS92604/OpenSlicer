@@ -7,6 +7,7 @@ mod icons;
 mod jobs;
 mod model;
 mod settings;
+mod split_ui;
 mod theme;
 mod widgets;
 

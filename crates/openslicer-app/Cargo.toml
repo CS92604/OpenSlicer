@@ -14,6 +14,9 @@ path = "src/main.rs"
 [dependencies]
 openslicer-core.workspace = true
 openslicer-io.workspace = true
+openslicer-split.workspace = true
+openslicer-joints.workspace = true
+openslicer-project.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 serde.workspace = true

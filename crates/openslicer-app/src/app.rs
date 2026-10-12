@@ -4,6 +4,7 @@ use crate::icons::Icon;
 use crate::jobs::{self, Job, JobEvent};
 use crate::model::Model;
 use crate::settings::{Fit, Preferences, PrinterProfile};
+use crate::split_ui::{self, Action, SplitPanel};
 use crate::theme;
 use crate::widgets::{self, caption, chip, model_row, ribbon_button, section_header, vec3_row};
 use eframe::egui::{
@@ -58,6 +59,11 @@ pub struct OpenSlicerApp {
     lock_scale: bool,
     move_drag: Option<MoveDrag>,
     pending_fit: bool,
+    split: SplitPanel,
+    /// Models created from the latest split, with the assembly-pose position of each.
+    parts: Vec<(u64, Vec3)>,
+    /// Source model hidden while its parts are shown.
+    hidden_source: Option<u64>,
 }
 
 impl OpenSlicerApp {
@@ -74,13 +80,16 @@ impl OpenSlicerApp {
             tool: Tool::Select,
             job: None,
             queue: initial.into(),
-            status: ("Ready. Open an STL file or drop one onto the window.".into(), Level::Info),
+            status: ("Ready. Open an STL, OBJ or 3MF file or drop one onto the window.".into(), Level::Info),
             error: None,
             show_printer: false,
             show_about: false,
             lock_scale: true,
             move_drag: None,
             pending_fit: false,
+            split: SplitPanel::default(),
+            parts: Vec::new(),
+            hidden_source: None,
         }
     }
 
@@ -116,7 +125,7 @@ impl OpenSlicerApp {
     }
 
     fn open_dialog(&mut self, ctx: &egui::Context) {
-        if let Some(files) = self.dialog().add_filter("3D models", &["stl"]).set_title("Open model").pick_files() {
+        if let Some(files) = self.dialog().add_filter("3D models", &["stl", "obj", "3mf"]).set_title("Open model").pick_files() {
             self.queue.extend(files);
             self.start_next_load(ctx);
         }
@@ -192,6 +201,7 @@ impl OpenSlicerApp {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.set_status(format!("Exported {name}: {summary}"), Level::Ok);
             }
+            JobEvent::Split { source, outcome } => self.show_split_result(source, *outcome),
             JobEvent::Cancelled => self.set_status("Operation cancelled. No changes were made.", Level::Info),
             JobEvent::Failed { title, detail } => {
                 self.set_status(title.clone(), Level::Error);
@@ -200,6 +210,118 @@ impl OpenSlicerApp {
             JobEvent::Progress(_) => {}
         }
         self.start_next_load(ctx);
+    }
+
+    // ---- splitting -----------------------------------------------------------
+
+    fn start_split(&mut self, ctx: &egui::Context) {
+        if self.job.is_some() {
+            return;
+        }
+        let Some(idx) = self.selected_index() else {
+            self.set_status("Select a model to split.", Level::Warn);
+            return;
+        };
+        let settings = match self.split.settings() {
+            Ok(s) => s,
+            Err(e) => {
+                self.set_status(e, Level::Warn);
+                return;
+            }
+        };
+        // Splitting a previous result again would cut the parts, not the model.
+        if self.parts.iter().any(|(id, _)| *id == self.models[idx].id) {
+            self.set_status("That is a part of the previous split. Select the original model, or clear the result first.", Level::Warn);
+            return;
+        }
+        let printer = split_ui::project_printer(&self.prefs.printer, self.split.clearance);
+        let model = &self.models[idx];
+        self.split.source_name = model.name.clone();
+        self.job = Some(jobs::spawn_split(ctx, model.name.clone(), model.transformed_mesh(), printer, settings));
+    }
+
+    fn clear_split(&mut self) {
+        for (id, _) in std::mem::take(&mut self.parts) {
+            self.renderer.remove(id);
+            self.models.retain(|m| m.id != id);
+        }
+        if let Some(src) = self.hidden_source.take() {
+            if let Some(m) = self.models.iter_mut().find(|m| m.id == src) {
+                m.visible = true;
+            }
+            self.selected = Some(src);
+        }
+        self.split.result = None;
+        self.split.explode = 0.0;
+    }
+
+    fn show_split_result(&mut self, source: String, outcome: openslicer_project::pipeline::SplitOutcome) {
+        let src_id = self.selected;
+        self.clear_split();
+        let mut first = None;
+        for piece in outcome.pieces.iter().chain(outcome.loose.iter()) {
+            let mesh = std::sync::Arc::new(piece.mesh.clone());
+            let stats = std::sync::Arc::new(mesh.stats());
+            let id = self.next_id;
+            let Some(mut model) = Model::new(id, piece.name.clone(), mesh.clone(), stats, None) else { continue };
+            let centre = piece.bounds.center();
+            model.transform.position = centre;
+            self.next_id += 1;
+            self.renderer.upload(id, mesh);
+            self.models.push(model);
+            self.parts.push((id, centre));
+            first.get_or_insert(id);
+        }
+        if let Some(src) = src_id {
+            if let Some(m) = self.models.iter_mut().find(|m| m.id == src) {
+                m.visible = false;
+                self.hidden_source = Some(src);
+            }
+        }
+        self.selected = first;
+        self.pending_fit = true;
+        let problems = outcome.problems.len();
+        let msg = format!(
+            "Split {source} into {} parts{}",
+            outcome.pieces.len(),
+            if problems == 0 { String::new() } else { format!(" with {problems} problem(s); see the Split window") }
+        );
+        self.set_status(msg, if problems == 0 { Level::Ok } else { Level::Warn });
+        self.split.explode = 0.0;
+        self.split.result = Some(std::sync::Arc::new(outcome));
+        self.split.open = true;
+    }
+
+    fn apply_explode(&mut self) {
+        let Some(r) = &self.split.result else { return };
+        let total: f32 = r.pieces.iter().map(|p| p.volume as f32).sum::<f32>().max(1e-6);
+        let centre = r.pieces.iter().fold(Vec3::ZERO, |acc, p| acc + p.bounds.center() * (p.volume as f32 / total));
+        let factor = self.split.explode * 0.6;
+        for (id, base) in &self.parts {
+            if let Some(m) = self.models.iter_mut().find(|m| m.id == *id) {
+                m.transform.position = *base + split_ui::explode_offset(*base, centre, factor);
+            }
+        }
+    }
+
+    fn export_split(&mut self, ctx: &egui::Context) {
+        let (Some(result), true) = (self.split.result.clone(), self.job.is_none()) else { return };
+        let Some(dir) = self.dialog().set_title("Choose an empty folder for the parts").pick_folder() else { return };
+        let printer = split_ui::project_printer(&self.prefs.printer, self.split.clearance);
+        let name = self.split.source_name.trim_end_matches(".stl").to_string();
+        self.job = Some(jobs::spawn_export_split(ctx, result, printer, name, dir));
+    }
+
+    fn split_window(&mut self, ctx: &egui::Context) {
+        let can_run = self.selected.is_some();
+        let busy = self.job.is_some();
+        match self.split.show(ctx, can_run, busy) {
+            Action::Run => self.start_split(ctx),
+            Action::Export => self.export_split(ctx),
+            Action::Clear => self.clear_split(),
+            Action::ExplodeChanged => self.apply_explode(),
+            Action::None => {}
+        }
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -358,10 +480,38 @@ impl OpenSlicerApp {
                 self.show_printer = !self.show_printer;
             }
             ribbon_sep(ui);
-            let todo = "Not implemented yet";
-            ribbon_button(ui, Icon::Split, "Split", false, false, todo);
-            ribbon_button(ui, Icon::Connector, "Connectors", false, false, todo);
-            ribbon_button(ui, Icon::Assembly, "Assembly", false, false, todo);
+            let can_split = !busy && self.models.iter().any(|m| m.visible);
+            if ribbon_button(
+                ui,
+                Icon::Split,
+                "Split",
+                can_split || self.split.result.is_some(),
+                self.split.open,
+                "Split the selected model to fit the printer, with connectors",
+            ) {
+                self.split.open = !self.split.open;
+            }
+            if ribbon_button(
+                ui,
+                Icon::Connector,
+                "Connectors",
+                can_split || self.split.result.is_some(),
+                false,
+                "Choose connector type, size and clearance (in the Split window)",
+            ) {
+                self.split.open = true;
+            }
+            let have_result = self.split.result.is_some();
+            if ribbon_button(
+                ui,
+                Icon::Assembly,
+                "Export parts",
+                have_result && !busy,
+                false,
+                "Write all parts, assembly instructions and a verified manifest to a folder",
+            ) {
+                self.export_split(&ctx);
+            }
         });
     }
 
@@ -494,7 +644,7 @@ impl OpenSlicerApp {
                 Fit::Exceeds(over) => {
                     chip(ui, "Exceeds the build volume", theme::WARN);
                     caption(ui, format!("Over by {:.1} × {:.1} × {:.1} mm", over.x, over.y, over.z));
-                    caption(ui, "Splitting is not implemented yet.");
+                    caption(ui, "Use Split in the command bar to cut it into parts that fit.");
                 }
             }
 
@@ -586,6 +736,7 @@ impl OpenSlicerApp {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         self.printer_window(ctx);
+        self.split_window(ctx);
         let mut close_error = false;
         if let Some(err) = &self.error {
             egui::Modal::new(egui::Id::new("error-modal")).show(ctx, |ui| {
@@ -617,8 +768,8 @@ impl OpenSlicerApp {
                     ui.add_space(8.0);
                     ui.label("Open-source tool for splitting oversized models into printable parts.");
                     ui.add_space(6.0);
-                    caption(ui, "Early skeleton: model viewing, transforms, build-volume checks and STL export work.");
-                    caption(ui, "Splitting, connectors and assembly planning are not implemented yet.");
+                    caption(ui, "Pre-alpha: viewing, transforms, splitting, connectors, export with manifest.");
+                    caption(ui, "Alternative construction methods and image tools are available in openslicer-cli.");
                 });
             self.show_about = open;
         }
