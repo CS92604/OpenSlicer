@@ -2,6 +2,7 @@
 
 mod app;
 mod camera;
+mod cutplanes;
 mod gl_view;
 mod icons;
 mod jobs;

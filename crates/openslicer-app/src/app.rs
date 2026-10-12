@@ -1,4 +1,5 @@
 use crate::camera::{ray_plane_z, Camera, ViewPreset};
+use crate::cutplanes::{plane_quad, section_segments, CutPlane};
 use crate::gl_view::{self, DrawModel, FlatBatch, Renderer};
 use crate::icons::Icon;
 use crate::jobs::{self, Job, JobEvent};
@@ -14,7 +15,8 @@ use eframe::egui::{
 use glam::{Vec2, Vec3};
 use openslicer_core::{Mesh, MeshStats};
 use openslicer_project::stock;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -47,6 +49,44 @@ struct MoveDrag {
     plane_z: f32,
 }
 
+/// A model as the undo history remembers it.
+#[derive(Clone)]
+struct SavedModel {
+    id: u64,
+    name: String,
+    mesh: Arc<Mesh>,
+    stats: Arc<MeshStats>,
+    source: Option<PathBuf>,
+    transform: Transform,
+}
+
+/// The editable scene (the models the user added; split parts are regenerated, not remembered).
+#[derive(Clone, Default)]
+struct SceneState {
+    models: Vec<SavedModel>,
+    selected: Option<u64>,
+}
+
+fn scene_signature(s: &SceneState) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for m in &s.models {
+        m.id.hash(&mut h);
+        m.name.hash(&mut h);
+        (Arc::as_ptr(&m.mesh) as usize).hash(&mut h);
+        for v in [m.transform.position, m.transform.rotation_deg, m.transform.scale] {
+            [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()].hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// A manual plane, the mesh it was cut against (by address), and the outline segments found.
+type PlaneOutline = (CutPlane, usize, Vec<(Vec3, Vec3)>);
+
+const UNDO_LIMIT: usize = 100;
+/// Highlight for the part being placed during assembly playback.
+const STEP_COLOR: [f32; 3] = [1.0, 0.85, 0.25];
+
 pub struct OpenSlicerApp {
     prefs: Preferences,
     camera: Camera,
@@ -74,6 +114,15 @@ pub struct OpenSlicerApp {
     restore_prompt: Option<PathBuf>,
     project_path: Option<PathBuf>,
     show_stock: bool,
+    undo: Vec<SceneState>,
+    redo: Vec<SceneState>,
+    /// The scene as last recorded; a change that has settled is pushed onto `undo`.
+    hist_state: SceneState,
+    hist_sig: u64,
+    /// World-space copy of the model being cut, for the outline preview of manual planes.
+    cut_mesh: Option<(u64, Transform, Arc<Mesh>)>,
+    plane_outline: HashMap<usize, PlaneOutline>,
+    plane_drag: Option<usize>,
 }
 
 impl OpenSlicerApp {
@@ -109,6 +158,13 @@ impl OpenSlicerApp {
             restore_prompt,
             project_path: None,
             show_stock: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            hist_sig: scene_signature(&SceneState::default()),
+            hist_state: SceneState::default(),
+            cut_mesh: None,
+            plane_outline: HashMap::new(),
+            plane_drag: None,
         }
     }
 
@@ -389,6 +445,9 @@ impl OpenSlicerApp {
         }
         self.split.result = None;
         self.split.explode = 0.0;
+        self.split.steps.clear();
+        self.split.step = 0;
+        self.split.playing = false;
     }
 
     fn show_split_result(&mut self, source: String, outcome: openslicer_project::pipeline::SplitOutcome) {
@@ -400,6 +459,7 @@ impl OpenSlicerApp {
             let stats = std::sync::Arc::new(mesh.stats());
             let id = self.next_id;
             let Some(mut model) = Model::new(id, piece.name.clone(), mesh.clone(), stats, None) else { continue };
+            model.color = Some(gl_view::PART_PALETTE[self.parts.len() % gl_view::PART_PALETTE.len()]);
             let centre = piece.bounds.center();
             model.transform.position = centre;
             self.next_id += 1;
@@ -424,6 +484,10 @@ impl OpenSlicerApp {
         );
         self.set_status(msg, if problems == 0 { Level::Ok } else { Level::Warn });
         self.split.explode = 0.0;
+        self.split.steps =
+            openslicer_project::assembly::plan_assembly(&outcome.pieces, &outcome.interfaces, &outcome.connectors, &outcome.loose);
+        self.split.step = 0;
+        self.split.playing = false;
         self.split.result = Some(std::sync::Arc::new(outcome));
         self.split.open = true;
     }
@@ -440,6 +504,221 @@ impl OpenSlicerApp {
         }
     }
 
+    /// Shows the parts that exist at the current playback step and highlights the one being placed.
+    fn apply_playback(&mut self) {
+        let Some(r) = self.split.result.clone() else { return };
+        let step = self.split.step;
+        if step != 0 {
+            // The highlight colour marks the part being placed; a selection would tint it.
+            self.selected = None;
+        }
+        let pieces = r.pieces.len();
+        for (idx, (id, _)) in self.parts.iter().enumerate() {
+            let own = gl_view::PART_PALETTE[idx % gl_view::PART_PALETTE.len()];
+            let (number, current) = if idx < pieces {
+                let n = self.split.steps.iter().find(|s| s.part_id == r.pieces[idx].id).map_or(0, |s| s.number);
+                (n, step != 0 && n == step)
+            } else {
+                let name = r.loose.get(idx - pieces).map(|l| l.name.as_str()).unwrap_or_default();
+                let n = self.split.steps.iter().find(|s| s.loose.iter().any(|l| l == name)).map_or(0, |s| s.number);
+                (n, false)
+            };
+            if let Some(m) = self.models.iter_mut().find(|m| m.id == *id) {
+                m.visible = step == 0 || number <= step;
+                m.color = Some(if current { STEP_COLOR } else { own });
+            }
+        }
+    }
+
+    // ---- manual cutting planes ------------------------------------------------
+
+    /// The model the manual planes act on: the selection, or else the first visible model that is not a part.
+    fn cut_target(&self) -> Option<usize> {
+        let is_part = |id: u64| self.parts.iter().any(|p| p.0 == id);
+        self.selected_index()
+            .filter(|&i| !is_part(self.models[i].id))
+            .or_else(|| self.models.iter().position(|m| !is_part(m.id) && m.visible))
+    }
+
+    fn cut_preview_active(&self) -> bool {
+        self.split.open && self.split.layout == split_ui::LayoutChoice::Manual && self.split.show_planes && self.split.result.is_none()
+    }
+
+    /// Centre and half-size of the preview squares.
+    fn cut_extent(&mut self) -> Option<(Vec3, f32)> {
+        let i = self.cut_target()?;
+        let b = self.models[i].world_bounds();
+        Some((b.center(), (b.max - b.min).length() * 0.5))
+    }
+
+    fn pick_plane(&mut self, origin: Vec3, dir: Vec3) -> Option<usize> {
+        let (centre, half) = self.cut_extent()?;
+        let mut best: Option<(f32, usize)> = None;
+        for (i, p) in self.split.planes.iter().enumerate() {
+            let (n, d) = (p.normal().as_vec3(), p.distance() as f32);
+            let denom = n.dot(dir);
+            if denom.abs() < 1e-6 {
+                continue;
+            }
+            let t = (d - n.dot(origin)) / denom;
+            if t <= 0.0 {
+                continue;
+            }
+            let hit = origin + dir * t;
+            let on_plane_centre = centre - n * (n.dot(centre) - d);
+            if (hit - on_plane_centre).length() <= half && best.is_none_or(|(bt, _)| t < bt) {
+                best = Some((t, i));
+            }
+        }
+        best.map(|(_, i)| i)
+    }
+
+    /// Moves plane `i` along its normal by a mouse movement of `delta` pixels.
+    fn drag_plane(&mut self, i: usize, delta: Vec2, rect: Rect, aspect: f32) {
+        let Some((centre, _)) = self.cut_extent() else { return };
+        let Some(p) = self.split.planes.get(i).copied() else { return };
+        let (n, d) = (p.normal().as_vec3(), p.distance() as f32);
+        let on_plane = centre - n * (n.dot(centre) - d);
+        let vp = self.camera.projection(aspect) * self.camera.view();
+        let to_px = |q: Vec3| {
+            let h = vp * q.extend(1.0);
+            let ndc = Vec2::new(h.x, h.y) / h.w;
+            Vec2::new((ndc.x + 1.0) * 0.5 * rect.width(), (1.0 - ndc.y) * 0.5 * rect.height())
+        };
+        let step = (self.camera.distance * 0.2).max(1.0);
+        let dir = to_px(on_plane + n * step) - to_px(on_plane);
+        let len2 = dir.length_squared();
+        if len2 < 1e-6 || !len2.is_finite() {
+            return;
+        }
+        let mm = delta.dot(dir) / len2 * step;
+        let cos = p.tilt_deg.to_radians().cos().max(0.5);
+        self.split.planes[i].offset += f64::from(mm) / cos;
+    }
+
+    /// Translucent squares and the outline where each plane cuts the model.
+    fn cut_preview(&mut self, tris: &mut Vec<gl_view::FlatVertex>, lines: &mut Vec<gl_view::FlatVertex>) {
+        if !self.cut_preview_active() {
+            return;
+        }
+        let (Some(ti), Some((centre, half))) = (self.cut_target(), self.cut_extent()) else { return };
+        let (id, tr) = (self.models[ti].id, self.models[ti].transform);
+        if !matches!(&self.cut_mesh, Some((i, t, _)) if *i == id && *t == tr) {
+            self.cut_mesh = Some((id, tr, Arc::new(self.models[ti].transformed_mesh())));
+            self.plane_outline.clear();
+        }
+        let Some((_, _, mesh)) = self.cut_mesh.clone() else { return };
+        let ptr = Arc::as_ptr(&mesh) as usize;
+        self.plane_outline.retain(|i, _| *i < self.split.planes.len());
+        for (i, p) in self.split.planes.iter().enumerate() {
+            let (n, d) = (p.normal().as_vec3(), p.distance() as f32);
+            let active = i == self.split.active_plane;
+            let fill = if active { [1.0, 0.78, 0.2, 0.22] } else { [0.30, 0.76, 1.0, 0.16] };
+            let edge = if active { [1.0, 0.85, 0.3, 1.0] } else { [0.30, 0.76, 1.0, 0.8] };
+            let q = plane_quad(n, d, centre, half);
+            for k in [0, 1, 2, 0, 2, 3] {
+                tris.push(gl_view::FlatVertex::new(q[k], fill));
+            }
+            for k in 0..4 {
+                lines.push(gl_view::FlatVertex::new(q[k], edge));
+                lines.push(gl_view::FlatVertex::new(q[(k + 1) % 4], edge));
+            }
+            let stale = !matches!(self.plane_outline.get(&i), Some((cp, cptr, _)) if cp == p && *cptr == ptr);
+            if stale {
+                self.plane_outline.insert(i, (*p, ptr, section_segments(&mesh, n, d)));
+            }
+            if let Some((_, _, segs)) = self.plane_outline.get(&i) {
+                for (a, b) in segs {
+                    lines.push(gl_view::FlatVertex::new(*a, [1.0, 0.85, 0.2, 1.0]));
+                    lines.push(gl_view::FlatVertex::new(*b, [1.0, 0.85, 0.2, 1.0]));
+                }
+            }
+        }
+    }
+
+    // ---- undo and redo ---------------------------------------------------------
+
+    fn scene_state(&self) -> SceneState {
+        let is_part = |id: u64| self.parts.iter().any(|p| p.0 == id);
+        SceneState {
+            models: self
+                .models
+                .iter()
+                .filter(|m| !is_part(m.id))
+                .map(|m| SavedModel {
+                    id: m.id,
+                    name: m.name.clone(),
+                    mesh: m.mesh.clone(),
+                    stats: m.stats.clone(),
+                    source: m.source.clone(),
+                    transform: m.transform,
+                })
+                .collect(),
+            selected: self.selected,
+        }
+    }
+
+    /// Records the scene once an edit has settled (the mouse is up and no field is being typed in), so a whole
+    /// drag or a typed value is one undo step.
+    fn history_tick(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.pointer.any_down()) || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let now = self.scene_state();
+        let sig = scene_signature(&now);
+        if sig != self.hist_sig {
+            let previous = std::mem::replace(&mut self.hist_state, now);
+            self.undo.push(previous);
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+            self.hist_sig = sig;
+        }
+    }
+
+    fn restore_scene(&mut self, st: &SceneState) {
+        self.clear_split();
+        let keep: HashSet<u64> = st.models.iter().map(|m| m.id).collect();
+        let mut old: Vec<Model> = std::mem::take(&mut self.models);
+        for m in old.iter().filter(|m| !keep.contains(&m.id)) {
+            self.renderer.remove(m.id);
+        }
+        let mut restored = Vec::new();
+        for sm in &st.models {
+            if let Some(pos) = old.iter().position(|m| m.id == sm.id) {
+                let mut m = old.remove(pos);
+                m.name = sm.name.clone();
+                m.transform = sm.transform;
+                restored.push(m);
+            } else if let Some(mut m) = Model::new(sm.id, sm.name.clone(), sm.mesh.clone(), sm.stats.clone(), sm.source.clone()) {
+                m.transform = sm.transform;
+                self.renderer.upload(sm.id, sm.mesh.clone());
+                restored.push(m);
+            }
+        }
+        self.models = restored;
+        self.selected = st.selected.filter(|id| keep.contains(id));
+        self.hist_state = st.clone();
+        self.hist_sig = scene_signature(st);
+    }
+
+    fn undo(&mut self) {
+        let Some(prev) = self.undo.pop() else { return };
+        let current = self.hist_state.clone();
+        self.restore_scene(&prev);
+        self.redo.push(current);
+        self.set_status(format!("Undo ({} more)", self.undo.len()), Level::Info);
+    }
+
+    fn redo(&mut self) {
+        let Some(next) = self.redo.pop() else { return };
+        let current = self.hist_state.clone();
+        self.restore_scene(&next);
+        self.undo.push(current);
+        self.set_status(format!("Redo ({} more)", self.redo.len()), Level::Info);
+    }
+
     fn export_split(&mut self, ctx: &egui::Context) {
         let (Some(result), true) = (self.split.result.clone(), self.job.is_none()) else { return };
         let Some(dir) = self.dialog().set_title("Choose an empty folder for the parts").pick_folder() else { return };
@@ -451,7 +730,12 @@ impl OpenSlicerApp {
     fn split_window(&mut self, ctx: &egui::Context) {
         let can_run = self.selected.is_some();
         let busy = self.job.is_some();
-        match self.split.show(ctx, can_run, busy) {
+        let bounds = self.cut_target().map(|i| {
+            let b = self.models[i].world_bounds();
+            (b.min, b.max)
+        });
+        match self.split.show(ctx, can_run, busy, bounds) {
+            Action::PlaybackChanged => self.apply_playback(),
             Action::Run => self.start_split(ctx),
             Action::Export => self.export_split(ctx),
             Action::Clear => self.clear_split(),
@@ -485,6 +769,17 @@ impl OpenSlicerApp {
         }
         if ctx.egui_wants_keyboard_input() {
             return;
+        }
+        let (undo, redo) = ctx.input_mut(|i| {
+            let redo = i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z))
+                || i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y));
+            (i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z)), redo)
+        });
+        if undo {
+            self.undo();
+        }
+        if redo {
+            self.redo();
         }
         let (del, fit, v1, v2, v3, v4, esc) = ctx.input(|i| {
             (
@@ -569,6 +864,16 @@ impl OpenSlicerApp {
                 ui.separator();
                 if ui.button("Exit").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.menu_button("Edit", |ui| {
+                if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Undo").shortcut_text("Ctrl+Z")).clicked() {
+                    ui.close();
+                    self.undo();
+                }
+                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Redo").shortcut_text("Ctrl+Y")).clicked() {
+                    ui.close();
+                    self.redo();
                 }
             });
             ui.menu_button("View", |ui| {
@@ -1081,14 +1386,16 @@ impl OpenSlicerApp {
                 };
                 gl_view::push_box_lines(&mut overlay_lines, b.min, b.max, color);
             }
-            models.push(DrawModel { id: m.id, matrix: m.matrix(), selected: is_sel, mirrored: m.is_mirrored() });
+            models.push(DrawModel { id: m.id, matrix: m.matrix(), selected: is_sel, mirrored: m.is_mirrored(), color: m.color });
         }
+        let mut plane_tris = Vec::new();
+        self.cut_preview(&mut plane_tris, &mut overlay_lines);
         let frame = gl_view::Frame {
             view: self.camera.view(),
             proj: self.camera.projection(aspect),
             underlay: gl_view::plate_batches((bx / 2.0, by / 2.0), self.prefs.show_grid),
             models,
-            overlay: vec![FlatBatch { triangles: false, verts: overlay_lines }],
+            overlay: vec![FlatBatch { triangles: true, verts: plane_tris }, FlatBatch { triangles: false, verts: overlay_lines }],
         };
         ui.painter().add(egui::PaintCallback { rect, callback: self.renderer.callback(frame) });
 
@@ -1112,6 +1419,17 @@ impl OpenSlicerApp {
             }
         }
 
+        // Manual cutting planes take the drag when it starts on one.
+        if resp.drag_started_by(PointerButton::Primary) && !shift && self.cut_preview_active() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let (o, d) = self.camera.ray(to_ndc(pos), aspect);
+                if let Some(i) = self.pick_plane(o, d) {
+                    self.plane_drag = Some(i);
+                    self.split.active_plane = i;
+                }
+            }
+        }
+
         // Start of a primary drag: decide between moving a model and orbiting.
         if resp.drag_started_by(PointerButton::Primary) && self.tool == Tool::Move && !shift {
             if let Some(pos) = resp.interact_pointer_pos() {
@@ -1132,7 +1450,9 @@ impl OpenSlicerApp {
             let delta = resp.drag_delta();
             let d = Vec2::new(delta.x, delta.y);
             let pan = resp.dragged_by(PointerButton::Secondary) || middle_down || (resp.dragged_by(PointerButton::Primary) && shift);
-            if let (Some(md), true) = (&self.move_drag, resp.dragged_by(PointerButton::Primary)) {
+            if let (Some(i), true) = (self.plane_drag, resp.dragged_by(PointerButton::Primary)) {
+                self.drag_plane(i, d, rect, aspect);
+            } else if let (Some(md), true) = (&self.move_drag, resp.dragged_by(PointerButton::Primary)) {
                 if let (Some(pos), Some(idx)) = (resp.interact_pointer_pos(), self.models.iter().position(|m| m.id == md.id)) {
                     let (o, dir) = self.camera.ray(to_ndc(pos), aspect);
                     if let Some(hit) = ray_plane_z(o, dir, md.plane_z) {
@@ -1148,6 +1468,7 @@ impl OpenSlicerApp {
         }
         if resp.drag_stopped() {
             self.move_drag = None;
+            self.plane_drag = None;
         }
 
         if resp.clicked_by(PointerButton::Primary) {
@@ -1304,6 +1625,7 @@ impl eframe::App for OpenSlicerApp {
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
         self.dialogs(&ctx);
+        self.history_tick(&ctx);
 
         if self.job.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -1337,6 +1659,32 @@ impl eframe::App for OpenSlicerApp {
 #[cfg(test)]
 mod tests {
     use super::group;
+    use super::{scene_signature, SavedModel, SceneState};
+    use crate::model::Transform;
+    use glam::Vec3;
+    use openslicer_core::Mesh;
+    use std::sync::Arc;
+
+    fn saved(id: u64) -> SavedModel {
+        let mesh = Arc::new(Mesh::cuboid(Vec3::splat(10.0)));
+        SavedModel { id, name: format!("M{id}"), stats: Arc::new(mesh.stats()), mesh, source: None, transform: Transform::default() }
+    }
+
+    #[test]
+    fn the_scene_signature_changes_with_edits_and_not_without() {
+        let mut s = SceneState { models: vec![saved(1), saved(2)], selected: Some(1) };
+        let base = scene_signature(&s);
+        assert_eq!(base, scene_signature(&s.clone()));
+        s.selected = Some(2);
+        assert_eq!(base, scene_signature(&s), "selection alone is not an edit");
+        s.models[0].transform.position.x += 0.5;
+        assert_ne!(base, scene_signature(&s));
+        let moved = scene_signature(&s);
+        s.models[0].name.push('!');
+        assert_ne!(moved, scene_signature(&s));
+        s.models.pop();
+        assert_ne!(moved, scene_signature(&s));
+    }
 
     #[test]
     fn thousands_grouping() {

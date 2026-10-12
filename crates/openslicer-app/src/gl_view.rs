@@ -34,6 +34,8 @@ pub struct DrawModel {
     pub matrix: Mat4,
     pub selected: bool,
     pub mirrored: bool,
+    /// Colour when not selected; `None` for the default grey.
+    pub color: Option<[f32; 3]>,
 }
 
 /// Everything needed to draw one frame.
@@ -265,7 +267,7 @@ impl Renderer {
                     let mv = frame.view * m.matrix;
                     gl.uniform_matrix_4_f32_slice(u("u_mvp").as_ref(), false, &(frame.proj * mv).to_cols_array());
                     gl.uniform_matrix_4_f32_slice(u("u_mv").as_ref(), false, &mv.to_cols_array());
-                    let color = if m.selected { [0.42, 0.72, 0.95] } else { [0.72, 0.74, 0.78] };
+                    let color = surface_color(m.selected, m.color);
                     gl.uniform_3_f32(u("u_color").as_ref(), color[0], color[1], color[2]);
                     gl.uniform_1_f32(u("u_flip").as_ref(), if m.mirrored { 1.0 } else { 0.0 });
                     gl.bind_vertex_array(Some(g.vao));
@@ -280,6 +282,35 @@ impl Renderer {
         }))
     }
 }
+
+/// Colour of a model's surface: the highlight blue when selected (blended with its own colour, so parts stay
+/// recognisable), its own colour, or the default grey.
+pub fn surface_color(selected: bool, own: Option<[f32; 3]>) -> [f32; 3] {
+    const HIGHLIGHT: [f32; 3] = [0.42, 0.72, 0.95];
+    const GREY: [f32; 3] = [0.72, 0.74, 0.78];
+    match (selected, own) {
+        (true, Some(c)) => std::array::from_fn(|i| 0.45 * c[i] + 0.55 * HIGHLIGHT[i]),
+        (true, None) => HIGHLIGHT,
+        (false, Some(c)) => c,
+        (false, None) => GREY,
+    }
+}
+
+/// Distinct, readable part colours (pastel enough to keep shading visible).
+pub const PART_PALETTE: [[f32; 3]; 12] = [
+    [0.91, 0.55, 0.45],
+    [0.45, 0.78, 0.55],
+    [0.93, 0.80, 0.42],
+    [0.62, 0.55, 0.90],
+    [0.45, 0.75, 0.85],
+    [0.90, 0.52, 0.75],
+    [0.70, 0.82, 0.40],
+    [0.95, 0.65, 0.35],
+    [0.50, 0.62, 0.92],
+    [0.80, 0.60, 0.50],
+    [0.55, 0.85, 0.75],
+    [0.85, 0.75, 0.90],
+];
 
 /// Appends a wireframe box.
 pub fn push_box_lines(out: &mut Vec<FlatVertex>, min: Vec3, max: Vec3, color: [f32; 4]) {
@@ -338,6 +369,19 @@ pub fn plate_batches(half: (f32, f32), show_grid: bool) -> Vec<FlatBatch> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn part_colours_are_distinct_and_selection_stays_recognisable() {
+        for (i, a) in PART_PALETTE.iter().enumerate() {
+            for b in &PART_PALETTE[i + 1..] {
+                let d: f32 = (0..3).map(|k| (a[k] - b[k]).abs()).sum();
+                assert!(d > 0.15, "{a:?} and {b:?} are too alike");
+            }
+        }
+        assert_eq!(surface_color(false, None), [0.72, 0.74, 0.78]);
+        assert_eq!(surface_color(false, Some(PART_PALETTE[0])), PART_PALETTE[0]);
+        assert_ne!(surface_color(true, Some(PART_PALETTE[0])), surface_color(true, Some(PART_PALETTE[1])));
+    }
+
     use super::*;
 
     #[test]

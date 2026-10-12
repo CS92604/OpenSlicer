@@ -1,11 +1,13 @@
 //! The Split window: choose a layout and connectors, run the pipeline, review the outcome, export.
 
+use crate::cutplanes::{CutPlane, MAX_TILT};
 use crate::settings::PrinterProfile;
 use crate::theme;
 use crate::widgets::caption;
 use eframe::egui::{self, vec2, Align2, RichText};
 use glam::Vec3;
 use openslicer_joints::settings::{ConnectorKind, ConnectorSettings};
+use openslicer_project::assembly::AssemblyStep;
 use openslicer_project::labels::{LabelMode, LabelOptions};
 use openslicer_project::pipeline::SplitOutcome;
 use openslicer_project::profile::PrinterProfile as ProjectPrinter;
@@ -18,6 +20,8 @@ pub enum LayoutChoice {
     Auto,
     Grid,
     Modular,
+    /// Planes the user places and moves, with a live preview in the viewport.
+    Manual,
 }
 
 pub struct SplitPanel {
@@ -38,6 +42,15 @@ pub struct SplitPanel {
     pub label_mode: LabelMode,
     pub label_height: f64,
     pub label_depth: f64,
+    /// Manual cutting planes (world coordinates).
+    pub planes: Vec<CutPlane>,
+    pub active_plane: usize,
+    pub show_planes: bool,
+    /// Assembly sequence of the latest result, and the playback position (0 = all parts shown).
+    pub steps: Vec<AssemblyStep>,
+    pub step: usize,
+    pub playing: bool,
+    pub last_tick: Option<std::time::Instant>,
     /// Latest finished split.
     pub result: Option<Arc<SplitOutcome>>,
     /// Name of the model that was split.
@@ -65,6 +78,13 @@ impl Default for SplitPanel {
             label_mode: LabelMode::Off,
             label_height: 8.0,
             label_depth: 0.6,
+            planes: Vec::new(),
+            active_plane: 0,
+            show_planes: true,
+            steps: Vec::new(),
+            step: 0,
+            playing: false,
+            last_tick: None,
             result: None,
             source_name: String::new(),
             explode: 0.0,
@@ -74,6 +94,7 @@ impl Default for SplitPanel {
 
 pub enum Action {
     None,
+    PlaybackChanged,
     Run,
     Export,
     Clear,
@@ -96,6 +117,12 @@ impl SplitPanel {
         let layout = match self.layout {
             LayoutChoice::Auto => Layout::Auto { search_yaw: self.search_yaw, yaw_step_deg: 15.0 },
             LayoutChoice::Grid => Layout::Grid { divisions: self.grid, yaw_deg: 0.0 },
+            LayoutChoice::Manual => {
+                if self.planes.is_empty() {
+                    return Err("add at least one cutting plane".into());
+                }
+                Layout::Planes(self.planes.iter().map(|p| p.to_spec()).collect())
+            }
             LayoutChoice::Modular => {
                 if !self.spacing_on.iter().any(|&b| b) {
                     return Err("enable the cut spacing on at least one axis".into());
@@ -127,6 +154,50 @@ impl SplitPanel {
         })
     }
 
+    fn planes_ui(&mut self, ui: &mut egui::Ui, bounds: Option<(Vec3, Vec3)>) {
+        caption(
+            ui,
+            "Place planes yourself. Drag a plane in the viewport, or type its position. The outline shows where it cuts the model.",
+        );
+        let mut remove: Option<usize> = None;
+        for i in 0..self.planes.len() {
+            let range = bounds.map_or(-5000.0..=5000.0, |(lo, hi)| {
+                let a = self.planes[i].axis;
+                (f64::from(lo[a]) - 1.0)..=(f64::from(hi[a]) + 1.0)
+            });
+            ui.horizontal(|ui| {
+                let active = self.active_plane == i;
+                if ui.selectable_label(active, format!("Plane {}", i + 1)).clicked() {
+                    self.active_plane = i;
+                }
+                let p = &mut self.planes[i];
+                egui::ComboBox::from_id_salt(("plane-axis", i)).width(44.0).selected_text(["X", "Y", "Z"][p.axis % 3]).show_ui(ui, |ui| {
+                    for (k, name) in ["X", "Y", "Z"].into_iter().enumerate() {
+                        ui.selectable_value(&mut p.axis, k, name);
+                    }
+                });
+                ui.add(egui::DragValue::new(&mut p.offset).range(range).speed(0.5).suffix(" mm"));
+                ui.add(egui::DragValue::new(&mut p.tilt_deg).range(-MAX_TILT..=MAX_TILT).speed(0.5).suffix("°")).on_hover_text("Tilt");
+                if ui.small_button("Remove").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            self.planes.remove(i);
+            self.active_plane = self.active_plane.min(self.planes.len().saturating_sub(1));
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Add plane").clicked() {
+                let axis = self.planes.len() % 3;
+                let offset = bounds.map_or(0.0, |(lo, hi)| f64::from((lo[axis] + hi[axis]) * 0.5));
+                self.planes.push(CutPlane::new(axis, offset));
+                self.active_plane = self.planes.len() - 1;
+            }
+            ui.checkbox(&mut self.show_planes, "Show in viewport");
+        });
+    }
+
     /// Loads saved settings into the panel. Layouts the panel cannot edit (bricks, explicit planes) leave it unchanged.
     pub fn apply_settings(&mut self, s: &SplitSettings) {
         match &s.layout {
@@ -147,7 +218,15 @@ impl SplitPanel {
                     }
                 }
             }
-            Layout::Brick { .. } | Layout::Planes(_) => {}
+            Layout::Planes(specs) => {
+                let planes: Vec<CutPlane> = specs.iter().filter_map(CutPlane::from_spec).collect();
+                if !planes.is_empty() {
+                    self.layout = LayoutChoice::Manual;
+                    self.planes = planes;
+                    self.active_plane = 0;
+                }
+            }
+            Layout::Brick { .. } => {}
         }
         self.allow_standing = s.orientation == OrientationPolicy::Any;
         match &s.connectors {
@@ -167,11 +246,25 @@ impl SplitPanel {
         self.label_depth = s.labels.depth;
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, can_run: bool, busy: bool) -> Action {
+    /// `bounds` is the world-space box of the model being split (min, max), used for plane defaults and ranges.
+    pub fn show(&mut self, ctx: &egui::Context, can_run: bool, busy: bool, bounds: Option<(Vec3, Vec3)>) -> Action {
         if !self.open {
             return Action::None;
         }
         let mut action = Action::None;
+        if self.playing && !self.steps.is_empty() {
+            let due = self.last_tick.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(900));
+            if due {
+                self.last_tick = Some(std::time::Instant::now());
+                if self.step >= self.steps.len() {
+                    self.playing = false;
+                } else {
+                    self.step += 1;
+                    action = Action::PlaybackChanged;
+                }
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
         let mut open = true;
         egui::Window::new("Split model")
             .open(&mut open)
@@ -180,11 +273,14 @@ impl SplitPanel {
             .anchor(Align2::RIGHT_TOP, vec2(-16.0, 56.0))
             .show(ctx, |ui| {
                 ui.set_width(340.0);
+                let max_h = (ctx.content_rect().height() - 260.0).max(240.0);
+                egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
                 ui.label(RichText::new("Layout").color(theme::TEXT_SECONDARY));
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.layout, LayoutChoice::Auto, "Automatic");
                     ui.selectable_value(&mut self.layout, LayoutChoice::Grid, "Grid");
                     ui.selectable_value(&mut self.layout, LayoutChoice::Modular, "Every N mm");
+                    ui.selectable_value(&mut self.layout, LayoutChoice::Manual, "Manual planes");
                 });
                 match self.layout {
                     LayoutChoice::Auto => {
@@ -201,6 +297,7 @@ impl SplitPanel {
                             }
                         });
                     }
+                    LayoutChoice::Manual => self.planes_ui(ui, bounds),
                     LayoutChoice::Modular => {
                         egui::Grid::new("split-mod").num_columns(2).show(ui, |ui| {
                             for (i, axis) in ["X", "Y", "Z"].into_iter().enumerate() {
@@ -260,7 +357,13 @@ impl SplitPanel {
                     });
                     caption(ui, "Part number and assembly step, for example P07-3 (part 7, third to assemble). Parts with no flat area for it are listed.");
                 }
-                ui.add_space(8.0);
+                if let Some(r) = self.result.clone() {
+                    ui.separator();
+                    self.results(ui, &r, busy, &mut action);
+                }
+                });
+                // Always visible, below the scrolling settings.
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.add_enabled(can_run && !busy, egui::Button::new("Split")).on_disabled_hover_text("Select a model first").clicked()
                     {
@@ -270,10 +373,6 @@ impl SplitPanel {
                         action = Action::Clear;
                     }
                 });
-                if let Some(r) = self.result.clone() {
-                    ui.separator();
-                    self.results(ui, &r, busy, &mut action);
-                }
             });
         if !open {
             self.open = false;
@@ -312,6 +411,50 @@ impl SplitPanel {
                 }
             });
         }
+        if !self.steps.is_empty() {
+            ui.add_space(4.0);
+            ui.label(RichText::new("Assembly playback").color(theme::TEXT_SECONDARY));
+            let n = self.steps.len();
+            ui.horizontal(|ui| {
+                let mut changed = false;
+                if ui.add_enabled(self.step > 0, egui::Button::new("Back")).clicked() {
+                    self.step -= 1;
+                    self.playing = false;
+                    changed = true;
+                }
+                if ui.add_enabled(self.step < n, egui::Button::new("Next")).clicked() {
+                    self.step += 1;
+                    self.playing = false;
+                    changed = true;
+                }
+                let label = if self.playing { "Pause" } else { "Play" };
+                if ui.button(label).clicked() {
+                    self.playing = !self.playing;
+                    if self.playing && self.step >= n {
+                        self.step = 0;
+                    }
+                    self.last_tick = None;
+                    changed = true;
+                }
+                if ui.button("All").clicked() {
+                    self.step = 0;
+                    self.playing = false;
+                    changed = true;
+                }
+                if changed {
+                    *action = Action::PlaybackChanged;
+                }
+            });
+            if ui.add(egui::Slider::new(&mut self.step, 0..=n).show_value(false)).changed() {
+                self.playing = false;
+                *action = Action::PlaybackChanged;
+            }
+            let text = match self.steps.get(self.step.wrapping_sub(1)) {
+                Some(s) => describe_step(s, n),
+                None => format!("All {n} parts shown. Press Play or Next to build the assembly step by step."),
+            };
+            caption(ui, text);
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("Exploded view");
@@ -327,6 +470,24 @@ impl SplitPanel {
     }
 }
 
+/// One line describing an assembly step.
+pub fn describe_step(s: &AssemblyStep, total: usize) -> String {
+    let mut t = format!("Step {} of {total}: place {}", s.number, s.part_name);
+    if !s.attach_to.is_empty() {
+        t += &format!(" against {}", s.attach_to.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>().join(", "));
+    }
+    if !s.connectors.is_empty() {
+        t += &format!("; joints {}", s.connectors.join(", "));
+    }
+    if !s.loose.is_empty() {
+        t += &format!("; insert {}", s.loose.join(", "));
+    }
+    if s.starts_subassembly {
+        t += " (starts a new sub-assembly)";
+    }
+    t
+}
+
 /// World position of a piece's centre, used as the base for exploded offsets.
 pub fn explode_offset(piece_centre: Vec3, assembly_centre: Vec3, factor: f32) -> Vec3 {
     (piece_centre - assembly_centre) * factor
@@ -334,6 +495,61 @@ pub fn explode_offset(piece_centre: Vec3, assembly_centre: Vec3, factor: f32) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn steps_are_described_in_one_line() {
+        let step = AssemblyStep {
+            number: 3,
+            part_id: 7,
+            part_name: "P07".into(),
+            attach_to: vec![(2, "P02".into(), 100.0), (4, "P04".into(), 50.0)],
+            connectors: vec!["C05".into()],
+            loose: vec!["D01".into()],
+            starts_subassembly: false,
+        };
+        assert_eq!(describe_step(&step, 8), "Step 3 of 8: place P07 against P02, P04; joints C05; insert D01");
+    }
+
+    /// Manual planes drive the real engine: two parallel planes and one tilted plane cut a block into the expected pieces.
+    #[test]
+    fn manual_planes_cut_the_model_where_the_user_put_them() {
+        use openslicer_core::{control::Control, Mesh};
+        let mut m = Mesh::cuboid(Vec3::new(300.0, 100.0, 50.0));
+        m.translate(Vec3::new(0.0, 0.0, 25.0));
+        let panel = SplitPanel {
+            layout: LayoutChoice::Manual,
+            planes: vec![CutPlane::new(0, -50.0), CutPlane::new(0, 70.0)],
+            connector: None,
+            ..Default::default()
+        };
+        let out = openslicer_project::pipeline::run_split(
+            &m,
+            &project_printer(&PrinterProfile::default(), 0.2),
+            &panel.settings().unwrap(),
+            &Control::none(),
+        )
+        .unwrap();
+        assert_eq!(out.pieces.len(), 3, "{:?}", out.problems);
+        let mut widths: Vec<f32> = out.pieces.iter().map(|p| p.bounds.size().x).collect();
+        widths.sort_by(f32::total_cmp);
+        assert!(widths.iter().zip([80.0, 100.0, 120.0]).all(|(w, e)| (w - e).abs() < 0.01), "{widths:?}");
+        let sum: f64 = out.pieces.iter().map(|p| p.volume).sum();
+        assert!((sum - out.source.signed_volume).abs() < 1.0, "pieces add up to the model");
+    }
+
+    #[test]
+    fn manual_planes_become_engine_planes_and_back() {
+        let mut panel = SplitPanel { layout: LayoutChoice::Manual, ..Default::default() };
+        assert!(panel.settings().is_err(), "no planes yet");
+        panel.planes = vec![CutPlane::new(0, 100.0), CutPlane { axis: 2, offset: 40.0, tilt_deg: 15.0 }];
+        let s = panel.settings().unwrap();
+        assert!(matches!(&s.layout, Layout::Planes(p) if p.len() == 2));
+        let mut other = SplitPanel::default();
+        other.apply_settings(&s);
+        assert_eq!(other.layout, LayoutChoice::Manual);
+        assert_eq!(other.planes.len(), 2);
+        assert!((other.planes[1].tilt_deg - 15.0).abs() < 1e-9 && other.planes[1].axis == 2);
+    }
+
     #[test]
     fn settings_round_trip_through_the_panel() {
         let panel = SplitPanel {

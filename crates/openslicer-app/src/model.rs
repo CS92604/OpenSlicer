@@ -39,6 +39,8 @@ pub struct Model {
     pub stats: Arc<MeshStats>,
     pub source: Option<PathBuf>,
     pub visible: bool,
+    /// Display colour override (used for the parts of a split result).
+    pub color: Option<[f32; 3]>,
     pub transform: Transform,
     pivot: Vec3,
     bounds_cache: Option<(Transform, Aabb)>,
@@ -51,7 +53,7 @@ impl Model {
         let local_bounds = mesh.bounds()?;
         let pivot = local_bounds.center();
         let transform = Transform { position: Vec3::new(0.0, 0.0, local_bounds.size().z * 0.5), ..Default::default() };
-        Some(Self { id, name, mesh, stats, source, visible: true, transform, pivot, bounds_cache: None })
+        Some(Self { id, name, mesh, stats, source, visible: true, color: None, transform, pivot, bounds_cache: None })
     }
 
     pub fn matrix(&self) -> Mat4 {
