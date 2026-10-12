@@ -4,7 +4,7 @@
 
 `openslicer-cli split` and `fab`/`image` write, into an empty folder:
 
-- one mesh file per part (`.stl` binary, `.obj` or `.3mf`), named by `--name-template` (`{model}`, `{name}`, `{id}`);
+- one mesh file per part (`.stl` binary, `.obj`, `.3mf` or `.step`, a faceted B-rep with one face per triangle, in millimetres), named by `--name-template` (`{model}`, `{name}`, `{id}`);
 - optionally one file per build plate (`*_plate_NN.*`) when nesting;
 - `*_instructions.html` for splits: overview, parts list, connector table and one diagram per assembly step;
 - `*_outline.svg` (millimetres) for flat stock from `fab stack`;
@@ -26,8 +26,8 @@ A zip archive: `project.json` (version, name, printer profile, split settings, m
 ## Assembly CSV
 
 `<model>_assembly.csv` has one row per assembly step in assembly order, then one row per loose part (dowel). Columns:
-`step, part, type, file, label_on_part, label_status, attaches_to, contact_area_mm2, connectors, connector_types, loose_parts, starts_subassembly, size_x_mm, size_y_mm, size_z_mm, volume_cm3, print_plate, fits_printer`.
-Fields containing commas or quotes are quoted per RFC 4180; list-valued fields (`attaches_to`, `connectors`, `loose_parts`) are space-separated. `label_on_part` is the text engraved or raised on the part (for example `P07-3`) and `label_status` says where it went or why none was placed. Each part's `label` also appears in `manifest.json`.
+`step, part, type, file, label_on_part, label_status, attaches_to, contact_area_mm2, connectors, connector_types, needs_glue, loose_parts, starts_subassembly, size_x_mm, size_y_mm, size_z_mm, volume_cm3, print_plate, fits_printer`.
+Fields containing commas or quotes are quoted per RFC 4180; list-valued fields (`attaches_to`, `connectors`, `loose_parts`) are space-separated. `label_on_part` is the text engraved or raised on the part (for example `P07-3`) and `label_status` says where it went or why none was placed. `needs_glue` is `yes` when a joint in that step is a finger joint, which does not lock the pieces together across the seam. Each part's `label` also appears in `manifest.json`.
 
 ## Project files
 

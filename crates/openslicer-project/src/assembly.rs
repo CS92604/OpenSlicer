@@ -24,6 +24,9 @@ pub struct AssemblyStep {
     pub connectors: Vec<String>,
     /// Loose parts (dowels) used in this step.
     pub loose: Vec<String>,
+    /// True when a joint in this step is a finger joint, which holds the pieces in place sideways but needs glue
+    /// (or a clip) to stop them pulling apart.
+    pub needs_glue: bool,
     /// True when the piece touches nothing assembled so far (start of a sub-assembly).
     pub starts_subassembly: bool,
 }
@@ -68,6 +71,7 @@ pub fn plan_assembly(pieces: &[Piece], interfaces: &[Interface], connectors: &[C
             (i.a == next && partners.contains(&i.b)) || (i.b == next && partners.contains(&i.a))
         };
         let conns: Vec<String> = connectors.iter().filter(|c| iface_involved(c.interface)).map(|c| c.id.clone()).collect();
+        let needs_glue = connectors.iter().any(|c| c.kind == ConnectorKind::Comb && iface_involved(c.interface));
         let loose_used: Vec<String> = dowel_labels.iter().filter(|(_, ii)| iface_involved(*ii)).map(|(n, _)| n.clone()).collect();
         steps.push(AssemblyStep {
             number: steps.len() + 1,
@@ -76,6 +80,7 @@ pub fn plan_assembly(pieces: &[Piece], interfaces: &[Interface], connectors: &[C
             attach_to,
             connectors: conns,
             loose: loose_used,
+            needs_glue,
             starts_subassembly: starts,
         });
         assembled.push(next);
@@ -360,6 +365,12 @@ pub fn instructions_html(d: &DocInput) -> String {
         }
         if !step.connectors.is_empty() {
             let _ = write!(h, "<p>Connectors: {}.</p>", step.connectors.join(", "));
+        }
+        if step.needs_glue {
+            let _ = write!(
+                h,
+                "<p><b>Glue:</b> this seam uses finger joints. They stop the parts sliding sideways but not pulling apart, so glue the fingers or hold the seam with tape or a clip.</p>"
+            );
         }
         if !step.loose.is_empty() {
             let _ = write!(h, "<p>Insert dowel(s) {} before joining the parts.</p>", step.loose.join(", "));

@@ -120,6 +120,19 @@ impl Model {
         self.matrix().determinant() < 0.0
     }
 
+    /// Nearest hit along a world-space ray: distance, world-space point and outward face normal of the triangle hit.
+    pub fn pick_face(&mut self, origin: Vec3, dir: Vec3) -> Option<(f32, Vec3, Vec3)> {
+        let m = self.matrix();
+        let inv_m = m.inverse();
+        let (o, d) = (inv_m.transform_point3(origin), inv_m.transform_vector3(dir));
+        let (t, ti) = self.mesh.ray_intersect_tri(o, d)?;
+        let tri = self.mesh.triangles[ti].map(|i| self.mesh.vertices[i as usize]);
+        let local_n = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
+        // Normals transform with the inverse transpose.
+        let n = inv_m.transpose().transform_vector3(local_n).try_normalize()?;
+        Some((t, origin + dir * t, n))
+    }
+
     /// Nearest hit distance along a world-space ray, if the model is hit.
     pub fn pick(&mut self, origin: Vec3, dir: Vec3) -> Option<f32> {
         // Cheap reject against the world AABB (slab test).
@@ -195,6 +208,17 @@ mod tests {
         m.transform.scale = Vec3::new(-1.0, 1.0, 1.0);
         assert!(m.is_mirrored());
         assert!(m.transformed_mesh().stats().signed_volume > 0.0);
+    }
+
+    #[test]
+    fn picking_a_face_gives_its_outward_normal_and_point() {
+        let mut m = cube_model(Vec3::splat(10.0));
+        m.transform.position = Vec3::new(100.0, 0.0, 5.0);
+        let (t, p, n) = m.pick_face(Vec3::new(100.0, 0.0, 50.0), Vec3::new(0.0, 0.0, -1.0)).unwrap();
+        assert!((t - 40.0).abs() < 1e-3 && (p.z - 10.0).abs() < 1e-3, "{t} {p}");
+        assert!((n - Vec3::Z).length() < 1e-5, "{n}");
+        let (_, _, side) = m.pick_face(Vec3::new(200.0, 0.0, 5.0), Vec3::new(-1.0, 0.0, 0.0)).unwrap();
+        assert!((side - Vec3::X).length() < 1e-5, "{side}");
     }
 
     #[test]

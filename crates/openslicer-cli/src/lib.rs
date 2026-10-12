@@ -203,6 +203,7 @@ enum Format {
     Obj,
     #[value(name = "3mf")]
     ThreeMf,
+    Step,
 }
 
 impl From<Format> for ExportFormat {
@@ -211,6 +212,7 @@ impl From<Format> for ExportFormat {
             Format::Stl => ExportFormat::Stl,
             Format::Obj => ExportFormat::Obj,
             Format::ThreeMf => ExportFormat::ThreeMf,
+            Format::Step => ExportFormat::Step,
         }
     }
 }
@@ -302,6 +304,9 @@ struct SplitArgs {
     /// Skip the assembly CSV table.
     #[arg(long)]
     no_csv: bool,
+    /// Do not move automatic cuts away from tiny slivers (by default a cut may move a few millimetres).
+    #[arg(long)]
+    keep_cuts: bool,
     /// Put the part number and assembly step on each part: `inset` (engraved) or `outset` (raised).
     #[arg(long, value_name = "MODE")]
     labels: Option<String>,
@@ -388,6 +393,7 @@ impl SplitArgs {
             repair_first: !self.no_repair,
             nest: self.nest,
             verify_assembly: self.verify_assembly,
+            avoid_slivers: !self.keep_cuts,
             labels: LabelOptions {
                 mode: match self.labels.as_deref().map(str::to_ascii_lowercase).as_deref() {
                     None | Some("off") | Some("none") => LabelMode::Off,

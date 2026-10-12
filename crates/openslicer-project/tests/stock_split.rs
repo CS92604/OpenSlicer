@@ -130,3 +130,54 @@ fn every_stock_model_exports_and_verifies_after_a_round_trip() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// A hand-made choice for one join replaces the automatic connector for that join only, a join left plain is
+/// reported as a choice (not as a failure), and finger joints are marked as needing glue in the instructions.
+#[test]
+fn per_join_choices_replace_the_automatic_connector_and_finger_joints_need_glue() {
+    use openslicer_joints::settings::InterfaceOverride;
+    use openslicer_project::assembly::plan_assembly;
+    let printer = printer("Prusa MK4");
+    let model = build("wing").unwrap();
+    let base = SplitSettings { connectors: Some(ConnectorSettings::new(ConnectorKind::Pin)), ..Default::default() };
+    let auto = run_split(&model, &printer, &base, &Control::none()).unwrap();
+    assert!(auto.problems.is_empty(), "{:?}", auto.problems);
+    assert!(auto.interfaces.len() >= 3);
+    let (first, second) = (&auto.interfaces[0], &auto.interfaces[1]);
+
+    let mut cs = ConnectorSettings::new(ConnectorKind::Pin);
+    cs.overrides = vec![
+        InterfaceOverride { a: first.b, b: first.a, choice: None },
+        InterfaceOverride { a: second.a, b: second.b, choice: Some(ConnectorKind::Comb) },
+    ];
+    let out = run_split(&model, &printer, &SplitSettings { connectors: Some(cs), ..Default::default() }, &Control::none()).unwrap();
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    assert_eq!(out.joint_report.as_ref().unwrap().left_open, 1);
+    let on = |ii: usize| -> Vec<ConnectorKind> { out.connectors.iter().filter(|c| c.interface == ii).map(|c| c.kind).collect() };
+    assert!(on(0).is_empty(), "the join left plain has no connector");
+    assert!(on(1).iter().all(|k| *k == ConnectorKind::Comb) && !on(1).is_empty(), "the chosen join uses a finger joint: {:?}", on(1));
+    assert!((2..out.interfaces.len()).all(|i| on(i).iter().all(|k| *k == ConnectorKind::Pin)), "the other joins keep the default");
+    assert!(out.notes.iter().any(|n| n.contains("left plain by your choice")));
+
+    let steps = plan_assembly(&out.pieces, &out.interfaces, &out.connectors, &out.loose);
+    assert!(steps.iter().any(|s| s.needs_glue), "a finger joint is marked as needing glue");
+    let plain = plan_assembly(&auto.pieces, &auto.interfaces, &auto.connectors, &auto.loose);
+    assert!(plain.iter().all(|s| !s.needs_glue), "pins never need glue");
+}
+
+/// STEP export of real finger-joint parts re-imports with the same volume.
+#[test]
+fn step_export_of_a_split_model_verifies() {
+    use openslicer_project::export::{export, ExportFormat, ExportOptions};
+    let printer = printer("Prusa MK4");
+    let settings = SplitSettings { connectors: Some(ConnectorSettings::new(ConnectorKind::Comb)), ..Default::default() };
+    let out = run_split(&build("dome").unwrap(), &printer, &settings, &Control::none()).unwrap();
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let dir = std::env::temp_dir().join(format!("openslicer-step-export-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let opts = ExportOptions { model_name: "dome".into(), format: ExportFormat::Step, ..Default::default() };
+    let rep = export(&out, &printer, &opts, &dir, &Control::none()).unwrap();
+    assert!(rep.verification.is_ok(), "{:?}", rep.verification);
+    assert!(rep.manifest.parts.iter().all(|p| p.file.ends_with(".step")));
+    let _ = std::fs::remove_dir_all(&dir);
+}

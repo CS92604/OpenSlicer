@@ -6,8 +6,10 @@ use crate::theme;
 use crate::widgets::caption;
 use eframe::egui::{self, vec2, Align2, RichText};
 use glam::Vec3;
+use openslicer_joints::settings::InterfaceOverride;
 use openslicer_joints::settings::{ConnectorKind, ConnectorSettings};
 use openslicer_project::assembly::AssemblyStep;
+use openslicer_project::export::ExportFormat;
 use openslicer_project::labels::{LabelMode, LabelOptions};
 use openslicer_project::pipeline::SplitOutcome;
 use openslicer_project::profile::PrinterProfile as ProjectPrinter;
@@ -39,13 +41,19 @@ pub struct SplitPanel {
     pub repair: bool,
     pub nest: bool,
     pub verify_assembly: bool,
+    pub avoid_slivers: bool,
+    /// Joins whose connector was chosen by hand (keyed by piece ids of the current cut).
+    pub overrides: Vec<InterfaceOverride>,
     pub label_mode: LabelMode,
+    pub export_format: ExportFormat,
     pub label_height: f64,
     pub label_depth: f64,
     /// Manual cutting planes (world coordinates).
     pub planes: Vec<CutPlane>,
     pub active_plane: usize,
     pub show_planes: bool,
+    /// True while the next click on the model should place a plane on the face that was clicked.
+    pub pick_face: bool,
     /// Assembly sequence of the latest result, and the playback position (0 = all parts shown).
     pub steps: Vec<AssemblyStep>,
     pub step: usize,
@@ -75,12 +83,16 @@ impl Default for SplitPanel {
             repair: true,
             nest: false,
             verify_assembly: false,
+            avoid_slivers: true,
+            overrides: Vec::new(),
             label_mode: LabelMode::Off,
+            export_format: ExportFormat::Stl,
             label_height: 8.0,
             label_depth: 0.6,
             planes: Vec::new(),
             active_plane: 0,
             show_planes: true,
+            pick_face: false,
             steps: Vec::new(),
             step: 0,
             playing: false,
@@ -138,6 +150,7 @@ impl SplitPanel {
                 c.size = if kind == ConnectorKind::Comb { self.conn_size.max(10.0) } else { self.conn_size };
                 c.height = self.conn_height;
                 c.clearance = self.clearance;
+                c.overrides = self.overrides.clone();
                 c.validate().map_err(|e| format!("connector settings: {e}"))?;
                 Some(c)
             }
@@ -150,6 +163,7 @@ impl SplitPanel {
             repair_first: self.repair,
             nest: self.nest,
             verify_assembly: self.verify_assembly,
+            avoid_slivers: self.avoid_slivers,
             labels: LabelOptions { mode: self.label_mode, height: self.label_height, depth: self.label_depth },
         })
     }
@@ -177,7 +191,10 @@ impl SplitPanel {
                     }
                 });
                 ui.add(egui::DragValue::new(&mut p.offset).range(range).speed(0.5).suffix(" mm"));
-                ui.add(egui::DragValue::new(&mut p.tilt_deg).range(-MAX_TILT..=MAX_TILT).speed(0.5).suffix("°")).on_hover_text("Tilt");
+                ui.add(egui::DragValue::new(&mut p.tilt_deg).range(-MAX_TILT..=MAX_TILT).speed(0.5).suffix("°"))
+                    .on_hover_text("Tilt towards the next axis (X→Y, Y→Z, Z→X)");
+                ui.add(egui::DragValue::new(&mut p.tilt2_deg).range(-MAX_TILT..=MAX_TILT).speed(0.5).suffix("°"))
+                    .on_hover_text("Second tilt, towards the remaining axis. With both tilts the plane can face almost any direction.");
                 if ui.small_button("Remove").clicked() {
                     remove = Some(i);
                 }
@@ -195,6 +212,64 @@ impl SplitPanel {
                 self.active_plane = self.planes.len() - 1;
             }
             ui.checkbox(&mut self.show_planes, "Show in viewport");
+        });
+        ui.horizontal(|ui| {
+            let label = if self.pick_face { "Click a face on the model…" } else { "Plane from a face" };
+            if ui
+                .selectable_label(self.pick_face, label)
+                .on_hover_text("Click a face of the model: a plane is placed on it, flush with the face.")
+                .clicked()
+            {
+                self.pick_face = !self.pick_face;
+            }
+            if self.pick_face {
+                caption(ui, "Esc cancels.");
+            }
+        });
+    }
+
+    /// Per-join connector choices: each seam can keep the automatic connector, stay plain, or use another type.
+    fn joins_ui(&mut self, ui: &mut egui::Ui, r: &SplitOutcome) {
+        if self.connector.is_none() || r.interfaces.is_empty() {
+            return;
+        }
+        let name = |id: usize| r.pieces.iter().find(|p| p.id == id).map_or_else(|| id.to_string(), |p| p.name.clone());
+        let title = if self.overrides.is_empty() { "Joins".to_owned() } else { format!("Joins ({} changed)", self.overrides.len()) };
+        egui::CollapsingHeader::new(title).id_salt("split-joins").show(ui, |ui| {
+            caption(ui, "Choose the connector for each seam, or leave it plain. Changes apply the next time you press Split, and are forgotten by Clear result.");
+            egui::ScrollArea::vertical().max_height(150.0).id_salt("split-joins-scroll").show(ui, |ui| {
+                for (n, iface) in r.interfaces.iter().enumerate() {
+                    let existing = self.overrides.iter().position(|o| (o.a == iface.a && o.b == iface.b) || (o.a == iface.b && o.b == iface.a));
+                    let current = existing.map(|k| self.overrides[k].choice);
+                    let text = match current {
+                        None => "Automatic",
+                        Some(None) => "No connector",
+                        Some(Some(k)) => k.label(),
+                    };
+                    let mut pick = current;
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} – {}", name(iface.a), name(iface.b)));
+                        egui::ComboBox::from_id_salt(("join", n)).selected_text(text).width(150.0).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut pick, None, "Automatic");
+                            ui.selectable_value(&mut pick, Some(None), "No connector");
+                            for k in ConnectorKind::ALL {
+                                ui.selectable_value(&mut pick, Some(Some(k)), k.label());
+                            }
+                        });
+                    });
+                    if pick != current {
+                        if let Some(k) = existing {
+                            self.overrides.remove(k);
+                        }
+                        if let Some(choice) = pick {
+                            self.overrides.push(InterfaceOverride { a: iface.a, b: iface.b, choice });
+                        }
+                    }
+                }
+            });
+            if !self.overrides.is_empty() && ui.small_button("Reset all joins to automatic").clicked() {
+                self.overrides.clear();
+            }
         });
     }
 
@@ -236,8 +311,10 @@ impl SplitPanel {
                 self.conn_size = c.size;
                 self.conn_height = c.height;
                 self.clearance = c.clearance;
+                self.overrides = c.overrides.clone();
             }
         }
+        self.avoid_slivers = s.avoid_slivers;
         self.repair = s.repair_first;
         self.nest = s.nest;
         self.verify_assembly = s.verify_assembly;
@@ -339,6 +416,8 @@ impl SplitPanel {
                 ui.checkbox(&mut self.repair, "Repair the model first");
                 ui.checkbox(&mut self.nest, "Arrange parts on build plates");
                 ui.checkbox(&mut self.verify_assembly, "Check the assembly for overlaps (slow)");
+                ui.checkbox(&mut self.avoid_slivers, "Nudge automatic cuts away from tiny slivers")
+                    .on_hover_text("Moves an automatic cut up to a few millimetres when that avoids tiny floating islands in its cross-section. Manual planes are never moved.");
                 ui.add_space(4.0);
                 ui.label(RichText::new("Part labels").color(theme::TEXT_SECONDARY));
                 ui.horizontal(|ui| {
@@ -411,6 +490,7 @@ impl SplitPanel {
                 }
             });
         }
+        self.joins_ui(ui, r);
         if !self.steps.is_empty() {
             ui.add_space(4.0);
             ui.label(RichText::new("Assembly playback").color(theme::TEXT_SECONDARY));
@@ -463,10 +543,18 @@ impl SplitPanel {
             }
         });
         ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("File format");
+            for (f, name) in
+                [(ExportFormat::Stl, "STL"), (ExportFormat::Obj, "OBJ"), (ExportFormat::ThreeMf, "3MF"), (ExportFormat::Step, "STEP")]
+            {
+                ui.selectable_value(&mut self.export_format, f, name);
+            }
+        });
         if ui.add_enabled(!busy, egui::Button::new("Export parts…")).clicked() {
             *action = Action::Export;
         }
-        caption(ui, "Writes STL files, assembly instructions and manifest.json, then re-imports and verifies them.");
+        caption(ui, "Writes one file per part, assembly instructions (HTML and CSV) and manifest.json, then re-imports and verifies them. STEP is a faceted solid, not a parametric one.");
     }
 }
 
@@ -478,6 +566,9 @@ pub fn describe_step(s: &AssemblyStep, total: usize) -> String {
     }
     if !s.connectors.is_empty() {
         t += &format!("; joints {}", s.connectors.join(", "));
+    }
+    if s.needs_glue {
+        t += " (glue the finger joint)";
     }
     if !s.loose.is_empty() {
         t += &format!("; insert {}", s.loose.join(", "));
@@ -504,9 +595,12 @@ mod tests {
             attach_to: vec![(2, "P02".into(), 100.0), (4, "P04".into(), 50.0)],
             connectors: vec!["C05".into()],
             loose: vec!["D01".into()],
+            needs_glue: false,
             starts_subassembly: false,
         };
         assert_eq!(describe_step(&step, 8), "Step 3 of 8: place P07 against P02, P04; joints C05; insert D01");
+        let glued = AssemblyStep { needs_glue: true, ..step };
+        assert!(describe_step(&glued, 8).contains("glue the finger joint"));
     }
 
     /// Manual planes drive the real engine: two parallel planes and one tilted plane cut a block into the expected pieces.
@@ -540,7 +634,7 @@ mod tests {
     fn manual_planes_become_engine_planes_and_back() {
         let mut panel = SplitPanel { layout: LayoutChoice::Manual, ..Default::default() };
         assert!(panel.settings().is_err(), "no planes yet");
-        panel.planes = vec![CutPlane::new(0, 100.0), CutPlane { axis: 2, offset: 40.0, tilt_deg: 15.0 }];
+        panel.planes = vec![CutPlane::new(0, 100.0), CutPlane { axis: 2, offset: 40.0, tilt_deg: 15.0, tilt2_deg: -22.0 }];
         let s = panel.settings().unwrap();
         assert!(matches!(&s.layout, Layout::Planes(p) if p.len() == 2));
         let mut other = SplitPanel::default();
@@ -548,6 +642,7 @@ mod tests {
         assert_eq!(other.layout, LayoutChoice::Manual);
         assert_eq!(other.planes.len(), 2);
         assert!((other.planes[1].tilt_deg - 15.0).abs() < 1e-9 && other.planes[1].axis == 2);
+        assert!((other.planes[1].tilt2_deg + 22.0).abs() < 1e-9);
     }
 
     #[test]

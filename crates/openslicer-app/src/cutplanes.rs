@@ -5,7 +5,8 @@ use glam::{DVec3, Vec3};
 use openslicer_core::Mesh;
 use openslicer_project::settings::PlaneSpec;
 
-/// A plane that passes through `offset` on `axis` and is tilted about the next axis.
+/// A plane that passes through `offset` on `axis`, tilted towards the next axis by `tilt_deg` and then towards the
+/// third axis by `tilt2_deg`, so any orientation within about 60° of an axis can be reached.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CutPlane {
     /// 0 = X, 1 = Y, 2 = Z.
@@ -14,21 +15,24 @@ pub struct CutPlane {
     pub offset: f64,
     /// Tilt in degrees, from the axis towards the next one.
     pub tilt_deg: f64,
+    /// Second tilt in degrees, towards the axis after the next one.
+    pub tilt2_deg: f64,
 }
 
 pub const MAX_TILT: f64 = 60.0;
 
 impl CutPlane {
     pub fn new(axis: usize, offset: f64) -> Self {
-        Self { axis: axis % 3, offset, tilt_deg: 0.0 }
+        Self { axis: axis % 3, offset, tilt_deg: 0.0, tilt2_deg: 0.0 }
     }
 
     pub fn normal(&self) -> DVec3 {
-        let (a, c) = (self.axis % 3, (self.axis + 1) % 3);
-        let t = self.tilt_deg.to_radians();
+        let (a, c, e) = (self.axis % 3, (self.axis + 1) % 3, (self.axis + 2) % 3);
+        let (t, u) = (self.tilt_deg.to_radians(), self.tilt2_deg.to_radians());
         let mut n = DVec3::ZERO;
-        n[a] = t.cos();
+        n[a] = t.cos() * u.cos();
         n[c] = t.sin();
+        n[e] = t.cos() * u.sin();
         n
     }
 
@@ -47,17 +51,24 @@ impl CutPlane {
         PlaneSpec { point: self.point().to_array(), normal: self.normal().to_array() }
     }
 
-    /// Recovers a plane saved by [`CutPlane::to_spec`]. Planes that do not have that form (an arbitrary point or a
-    /// tilt about another axis) are approximated by the nearest axis and the offset of their closest point to the origin.
+    /// Recovers a plane saved by [`CutPlane::to_spec`], using the axis the normal points along most. Only the plane's
+    /// normal and the offset where it crosses that axis are kept, which describes the same plane.
     pub fn from_spec(s: &PlaneSpec) -> Option<Self> {
         let n = DVec3::from(s.normal).try_normalize()?;
+        Self::through(n, DVec3::from(s.point))
+    }
+
+    /// The plane through `point` with the given normal (which need not be unit length).
+    pub fn through(normal: DVec3, point: DVec3) -> Option<Self> {
+        let n = normal.try_normalize()?;
         let axis = (0..3).max_by(|&i, &j| n[i].abs().total_cmp(&n[j].abs()))?;
-        let c = (axis + 1) % 3;
-        let tilt = n[c].atan2(n[axis]).to_degrees();
-        let p = DVec3::from(s.point);
-        // Offset along the axis where the plane crosses it.
-        let offset = if n[axis].abs() > 1e-9 { n.dot(p) / n[axis] } else { p[axis] };
-        Some(Self { axis, offset, tilt_deg: tilt.clamp(-MAX_TILT, MAX_TILT) })
+        let (c, e) = ((axis + 1) % 3, (axis + 2) % 3);
+        // A normal pointing against the axis describes the same plane as its negation.
+        let n = if n[axis] < 0.0 { -n } else { n };
+        let tilt = n[c].clamp(-1.0, 1.0).asin().to_degrees();
+        let tilt2 = n[e].atan2(n[axis]).to_degrees();
+        let offset = n.dot(point) / n[axis];
+        Some(Self { axis, offset, tilt_deg: tilt.clamp(-MAX_TILT, MAX_TILT), tilt2_deg: tilt2.clamp(-MAX_TILT, MAX_TILT) })
     }
 }
 
@@ -97,13 +108,13 @@ mod tests {
     fn normals_are_unit_and_tilt_towards_the_next_axis() {
         for axis in 0..3 {
             for tilt in [-45.0, 0.0, 30.0] {
-                let p = CutPlane { axis, offset: 10.0, tilt_deg: tilt };
+                let p = CutPlane { axis, offset: 10.0, tilt_deg: tilt, tilt2_deg: 17.0 };
                 assert!((p.normal().length() - 1.0).abs() < 1e-12);
             }
         }
-        let p = CutPlane { axis: 0, offset: 0.0, tilt_deg: 90.0 };
+        let p = CutPlane { axis: 0, offset: 0.0, tilt_deg: 90.0, tilt2_deg: 0.0 };
         assert!((p.normal() - DVec3::Y).length() < 1e-12, "X tilts towards Y");
-        let z = CutPlane { axis: 2, offset: 5.0, tilt_deg: 0.0 };
+        let z = CutPlane { axis: 2, offset: 5.0, tilt_deg: 0.0, tilt2_deg: 0.0 };
         assert_eq!(z.normal(), DVec3::Z);
         assert_eq!(z.point(), DVec3::new(0.0, 0.0, 5.0));
     }
@@ -112,14 +123,35 @@ mod tests {
     fn planes_round_trip_through_engine_specs() {
         for p in [
             CutPlane::new(0, 12.5),
-            CutPlane { axis: 1, offset: -30.0, tilt_deg: 20.0 },
-            CutPlane { axis: 2, offset: 80.0, tilt_deg: -35.0 },
+            CutPlane { axis: 1, offset: -30.0, tilt_deg: 20.0, tilt2_deg: 0.0 },
+            CutPlane { axis: 2, offset: 80.0, tilt_deg: -35.0, tilt2_deg: 25.0 },
+            CutPlane { axis: 0, offset: 5.0, tilt_deg: 10.0, tilt2_deg: -40.0 },
         ] {
             let back = CutPlane::from_spec(&p.to_spec()).unwrap();
             assert_eq!(back.axis, p.axis);
-            assert!((back.offset - p.offset).abs() < 1e-9 && (back.tilt_deg - p.tilt_deg).abs() < 1e-9, "{p:?} -> {back:?}");
+            assert!(
+                (back.offset - p.offset).abs() < 1e-9
+                    && (back.tilt_deg - p.tilt_deg).abs() < 1e-9
+                    && (back.tilt2_deg - p.tilt2_deg).abs() < 1e-9,
+                "{p:?} -> {back:?}"
+            );
         }
         assert!(CutPlane::from_spec(&PlaneSpec { point: [0.0; 3], normal: [0.0; 3] }).is_none());
+    }
+
+    #[test]
+    fn any_plane_can_be_recovered_from_a_clicked_face() {
+        // A face normal pointing in an arbitrary direction, with the clicked point on the plane.
+        let n = DVec3::new(0.3, -0.5, 0.8).normalize();
+        let p = DVec3::new(12.0, 7.0, -3.0);
+        let plane = CutPlane::through(n, p).unwrap();
+        let (pn, pd) = (plane.normal(), plane.distance());
+        assert!(pn.dot(n).abs() > 1.0 - 1e-9, "same orientation (up to sign): {pn} vs {n}");
+        assert!((pn.dot(p) - pd).abs() < 1e-9, "the clicked point lies on the plane");
+        // Flipped normals describe the same plane.
+        let flipped = CutPlane::through(-n, p).unwrap();
+        assert!((flipped.normal() - pn).length() < 1e-9 && (flipped.offset - plane.offset).abs() < 1e-9);
+        assert!(CutPlane::through(DVec3::ZERO, p).is_none());
     }
 
     #[test]

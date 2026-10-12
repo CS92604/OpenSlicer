@@ -144,7 +144,7 @@ impl OpenSlicerApp {
             tool: Tool::Select,
             job: None,
             queue: initial.into(),
-            status: ("Ready. Open an STL, OBJ or 3MF file or drop one onto the window.".into(), Level::Info),
+            status: ("Ready. Open an STL, OBJ, 3MF or STEP file or drop one onto the window.".into(), Level::Info),
             error: None,
             show_printer: false,
             show_about: false,
@@ -204,7 +204,9 @@ impl OpenSlicerApp {
     }
 
     fn open_dialog(&mut self, ctx: &egui::Context) {
-        if let Some(files) = self.dialog().add_filter("3D models", &["stl", "obj", "3mf"]).set_title("Open model").pick_files() {
+        if let Some(files) =
+            self.dialog().add_filter("3D models", &["stl", "obj", "3mf", "step", "stp"]).set_title("Open model").pick_files()
+        {
             self.queue.extend(files);
             self.start_next_load(ctx);
         }
@@ -218,12 +220,23 @@ impl OpenSlicerApp {
             self.set_status("Select a model to export.", Level::Warn);
             return;
         };
-        let name = format!("{}.stl", self.models[idx].name.trim_end_matches(".stl"));
-        let Some(path) =
-            self.dialog().add_filter("Binary STL", &["stl"]).set_file_name(&name).set_title("Export selected model").save_file()
+        let stem = std::path::Path::new(&self.models[idx].name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = format!("{stem}.stl");
+        let Some(mut path) = self
+            .dialog()
+            .add_filter("Binary STL", &["stl"])
+            .add_filter("OBJ", &["obj"])
+            .add_filter("3MF", &["3mf"])
+            .add_filter("STEP (faceted)", &["step", "stp"])
+            .set_file_name(&name)
+            .set_title("Export selected model")
+            .save_file()
         else {
             return;
         };
+        if path.extension().is_none() {
+            path.set_extension("stl");
+        }
         let mesh = self.models[idx].transformed_mesh();
         self.job = Some(jobs::spawn_export(ctx, mesh, path));
     }
@@ -421,10 +434,16 @@ impl OpenSlicerApp {
                 return;
             }
         };
-        // Splitting a previous result again would cut the parts, not the model.
+        // Splitting a previous result again would cut the parts, not the model: go back to the original instead.
+        let mut idx = idx;
         if self.parts.iter().any(|(id, _)| *id == self.models[idx].id) {
-            self.set_status("That is a part of the previous split. Select the original model, or clear the result first.", Level::Warn);
-            return;
+            if self.hidden_source.is_none() {
+                self.set_status("That is a part of the previous split. Select the original model, or clear the result first.", Level::Warn);
+                return;
+            }
+            self.clear_split();
+            let Some(i) = self.selected_index() else { return };
+            idx = i;
         }
         let printer = split_ui::project_printer(&self.prefs.printer, self.split.clearance);
         let model = &self.models[idx];
@@ -592,7 +611,7 @@ impl OpenSlicerApp {
             return;
         }
         let mm = delta.dot(dir) / len2 * step;
-        let cos = p.tilt_deg.to_radians().cos().max(0.5);
+        let cos = p.normal()[p.axis % 3].abs().max(0.25);
         self.split.planes[i].offset += f64::from(mm) / cos;
     }
 
@@ -724,7 +743,7 @@ impl OpenSlicerApp {
         let Some(dir) = self.dialog().set_title("Choose an empty folder for the parts").pick_folder() else { return };
         let printer = split_ui::project_printer(&self.prefs.printer, self.split.clearance);
         let name = self.split.source_name.trim_end_matches(".stl").to_string();
-        self.job = Some(jobs::spawn_export_split(ctx, result, printer, name, dir));
+        self.job = Some(jobs::spawn_export_split(ctx, result, printer, name, dir, self.split.export_format));
     }
 
     fn split_window(&mut self, ctx: &egui::Context) {
@@ -738,7 +757,10 @@ impl OpenSlicerApp {
             Action::PlaybackChanged => self.apply_playback(),
             Action::Run => self.start_split(ctx),
             Action::Export => self.export_split(ctx),
-            Action::Clear => self.clear_split(),
+            Action::Clear => {
+                self.clear_split();
+                self.split.overrides.clear();
+            }
             Action::ExplodeChanged => self.apply_explode(),
             Action::None => {}
         }
@@ -857,7 +879,7 @@ impl OpenSlicerApp {
                 }
                 ui.separator();
                 let can_export = self.selected.is_some() && self.job.is_none();
-                if ui.add_enabled(can_export, egui::Button::new("Export selected as STL…").shortcut_text("Ctrl+E")).clicked() {
+                if ui.add_enabled(can_export, egui::Button::new("Export selected model…").shortcut_text("Ctrl+E")).clicked() {
                     ui.close();
                     self.export_dialog(&ctx);
                 }
@@ -929,7 +951,14 @@ impl OpenSlicerApp {
             if ribbon_button(ui, Icon::Cube, "Stock", !busy, self.show_stock, "Import a built-in sample model") {
                 self.show_stock = !self.show_stock;
             }
-            if ribbon_button(ui, Icon::Export, "Export", has_sel && !busy, false, "Export the selected model as binary STL (Ctrl+E)") {
+            if ribbon_button(
+                ui,
+                Icon::Export,
+                "Export",
+                has_sel && !busy,
+                false,
+                "Export the selected model as STL, OBJ, 3MF or STEP (Ctrl+E)",
+            ) {
                 self.export_dialog(&ctx);
             }
             ribbon_sep(ui);
@@ -1471,15 +1500,40 @@ impl OpenSlicerApp {
             self.plane_drag = None;
         }
 
+        if self.split.pick_face && ui.input(|i| i.key_pressed(Key::Escape)) {
+            self.split.pick_face = false;
+        }
         if resp.clicked_by(PointerButton::Primary) {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let (o, d) = self.camera.ray(to_ndc(pos), aspect);
-                self.selected = self.pick(o, d);
+                if self.split.pick_face {
+                    self.plane_from_click(o, d);
+                } else {
+                    self.selected = self.pick(o, d);
+                }
             }
         }
         if resp.double_clicked_by(PointerButton::Primary) {
             self.fit_view();
         }
+    }
+
+    /// Places a manual plane flush with the face under the ray: it replaces the active plane, or is added when none exists.
+    fn plane_from_click(&mut self, origin: Vec3, dir: Vec3) {
+        self.split.pick_face = false;
+        let Some(target) = self.cut_target() else { return };
+        let Some((_, point, normal)) = self.models[target].pick_face(origin, dir) else {
+            self.set_status("The click did not hit the model. Click a face to place a plane on it.", Level::Warn);
+            return;
+        };
+        let Some(plane) = CutPlane::through(normal.as_dvec3(), point.as_dvec3()) else { return };
+        if let Some(slot) = self.split.planes.get_mut(self.split.active_plane) {
+            *slot = plane;
+        } else {
+            self.split.planes.push(plane);
+            self.split.active_plane = self.split.planes.len() - 1;
+        }
+        self.set_status("Plane placed on the clicked face. Drag it or type a distance to move it away from the surface.", Level::Info);
     }
 
     /// Nearest visible model hit by a world-space ray.

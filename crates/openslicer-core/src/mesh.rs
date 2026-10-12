@@ -149,8 +149,13 @@ impl Mesh {
     /// Distance along the ray to the nearest triangle hit (Möller–Trumbore), if any.
     /// `dir` need not be normalised; the returned `t` is in units of `dir`.
     pub fn ray_intersect(&self, origin: Vec3, dir: Vec3) -> Option<f32> {
-        let mut best: Option<f32> = None;
-        for t in &self.triangles {
+        self.ray_intersect_tri(origin, dir).map(|(t, _)| t)
+    }
+
+    /// Like [`Mesh::ray_intersect`], also returning the index of the triangle that was hit.
+    pub fn ray_intersect_tri(&self, origin: Vec3, dir: Vec3) -> Option<(f32, usize)> {
+        let mut best: Option<(f32, usize)> = None;
+        for (ti, t) in self.triangles.iter().enumerate() {
             let a = self.vertices[t[0] as usize];
             let e1 = self.vertices[t[1] as usize] - a;
             let e2 = self.vertices[t[2] as usize] - a;
@@ -171,8 +176,8 @@ impl Mesh {
                 continue;
             }
             let dist = e2.dot(q) * inv;
-            if dist > 0.0 && best.is_none_or(|b| dist < b) {
-                best = Some(dist);
+            if dist > 0.0 && best.is_none_or(|b| dist < b.0) {
+                best = Some((dist, ti));
             }
         }
         best

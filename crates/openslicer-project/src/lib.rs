@@ -4,6 +4,7 @@
 pub mod assembly;
 pub mod export;
 pub mod labels;
+pub mod nudge;
 pub mod pipeline;
 pub mod profile;
 pub mod project;

@@ -58,6 +58,8 @@ pub struct JointReport {
     pub volume_removed: f64,
     /// Interfaces that received no connector, with the reason.
     pub skipped: Vec<(usize, String)>,
+    /// Interfaces deliberately left plain by a hand-made choice.
+    pub left_open: usize,
     pub notes: Vec<String>,
     /// Correctness problems; empty means every applied piece verified.
     pub problems: Vec<String>,
@@ -337,10 +339,11 @@ fn adjust_for_thin_wall(s: &ConnectorSettings, rho: f64) -> Result<ConnectorSett
 pub fn generate_joints(
     pieces: &[Piece],
     interfaces: &[Interface],
-    settings: &ConnectorSettings,
+    base_settings: &ConnectorSettings,
     ctl: &Control,
 ) -> Result<JointResult, Cancelled> {
     let mut report = JointReport { interfaces_total: interfaces.len(), ..Default::default() };
+    let settings = base_settings;
     if let Err(e) = settings.validate() {
         report.problems.push(format!("invalid connector settings: {e}"));
         return Ok(JointResult { pieces: pieces.to_vec(), loose: Vec::new(), connectors: Vec::new(), report });
@@ -356,6 +359,18 @@ pub fn generate_joints(
     for (ii, iface) in interfaces.iter().enumerate() {
         ctl.check()?;
         ctl.report(ii as f32 / interfaces.len().max(1) as f32, &format!("Connectors for interface {} of {}", ii + 1, interfaces.len()));
+        let chosen;
+        let settings = match base_settings.override_for(iface.a, iface.b) {
+            None => base_settings,
+            Some(None) => {
+                report.left_open += 1;
+                continue;
+            }
+            Some(Some(kind)) => {
+                chosen = base_settings.with_kind(kind);
+                &chosen
+            }
+        };
         let (Some(&ia), Some(&ib)) = (index.get(&iface.a), index.get(&iface.b)) else {
             report.skipped.push((ii, "one of the pieces is missing".into()));
             continue;

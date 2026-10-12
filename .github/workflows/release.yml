@@ -1,13 +1,13 @@
 name: Release
 
 # Publishes ONE file: openslicer.exe (no installer, no archive).
-# Trigger by pushing a tag such as v0.1.0, or run it manually.
+# Trigger by pushing a tag such as v0.2.0, or run it manually.
 on:
   workflow_dispatch:
     inputs:
       tag:
         description: Release tag to create (blank = build only, no release)
-        default: v0.1.0
+        default: v0.2.0
   push:
     tags: ["v*"]
 

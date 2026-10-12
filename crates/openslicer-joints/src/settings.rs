@@ -103,6 +103,15 @@ pub enum ThinWallPolicy {
     Comb,
 }
 
+/// A hand-made choice for one join between two pieces (identified by piece id, in either order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InterfaceOverride {
+    pub a: usize,
+    pub b: usize,
+    /// `None` leaves the join plain (no connector); `Some(kind)` uses that connector type instead of the default.
+    pub choice: Option<ConnectorKind>,
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ConnectorSettings {
@@ -145,6 +154,8 @@ pub struct ConnectorSettings {
     pub thin_wall: ThinWallPolicy,
     /// Circle resolution.
     pub segments: usize,
+    /// Joins whose connector was chosen by hand, replacing the automatic choice.
+    pub overrides: Vec<InterfaceOverride>,
 }
 
 impl Default for ConnectorSettings {
@@ -179,6 +190,7 @@ impl ConnectorSettings {
             alternate: false,
             thin_wall: ThinWallPolicy::Comb,
             segments: 32,
+            overrides: Vec::new(),
         };
         match kind {
             ConnectorKind::Pin => base,
@@ -272,6 +284,27 @@ pub fn clearance_presets() -> &'static [(&'static str, f64)] {
         ("FDM, loose / easy assembly", 0.30),
         ("Resin (SLA/MSLA)", 0.10),
     ]
+}
+
+impl ConnectorSettings {
+    /// The hand-made choice for the join between pieces `a` and `b`, if there is one.
+    pub fn override_for(&self, a: usize, b: usize) -> Option<Option<ConnectorKind>> {
+        self.overrides.iter().find(|o| (o.a == a && o.b == b) || (o.a == b && o.b == a)).map(|o| o.choice)
+    }
+
+    /// Settings for a join whose connector type was changed by hand: that type's own defaults, with the
+    /// tolerances and thin-wall policy of these settings.
+    pub fn with_kind(&self, kind: ConnectorKind) -> Self {
+        let mut s = Self::new(kind);
+        s.clearance = self.clearance;
+        s.clearance_z = self.clearance_z;
+        s.min_wall = self.min_wall;
+        s.min_feature = self.min_feature;
+        s.thin_wall = self.thin_wall;
+        s.angle = self.angle;
+        s.segments = self.segments;
+        s
+    }
 }
 
 #[cfg(test)]

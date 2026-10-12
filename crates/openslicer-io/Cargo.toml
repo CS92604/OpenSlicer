@@ -13,3 +13,9 @@ glam.workspace = true
 thiserror.workspace = true
 zip.workspace = true
 roxmltree.workspace = true
+truck-stepio = "0.3"
+truck-meshalgo = "0.4"
+earcutr.workspace = true
+
+[dev-dependencies]
+truck-modeling = "0.6"

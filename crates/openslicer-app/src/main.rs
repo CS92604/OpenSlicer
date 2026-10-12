@@ -17,26 +17,14 @@ use eframe::egui;
 use std::path::PathBuf;
 
 fn app_icon() -> egui::IconData {
-    // Procedural 64×64 icon: accent hexagon on a dark rounded square.
-    const N: usize = 64;
-    let mut rgba = vec![0u8; N * N * 4];
-    for y in 0..N {
-        for x in 0..N {
-            let (fx, fy) = (x as f32 - 31.5, y as f32 - 31.5);
-            let corner = (fx.abs() - 22.0).max(0.0).hypot((fy.abs() - 22.0).max(0.0)) - 9.0;
-            let mut px = [0u8; 4];
-            if corner <= 0.0 {
-                px = [0x20, 0x20, 0x20, 0xFF];
-                // Hexagon (pointy-top) with a lighter top face.
-                let (ax, ay) = (fx.abs(), fy);
-                if ay.abs() <= 22.0 && ax <= 19.0 && ax * 0.5 + ay.abs() <= 22.0 {
-                    px = if ay < 0.0 && ay + ax * 0.577 < 0.0 { [0x4C, 0xC2, 0xFF, 0xFF] } else { [0x00, 0x67, 0xC0, 0xFF] };
-                }
-            }
-            rgba[(y * N + x) * 4..][..4].copy_from_slice(&px);
+    let png = include_bytes!("../../../assets/icon-64.png");
+    match image::load_from_memory_with_format(png, image::ImageFormat::Png) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            egui::IconData { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() }
         }
+        Err(_) => egui::IconData::default(),
     }
-    egui::IconData { rgba, width: N as u32, height: N as u32 }
 }
 
 fn native_options(multisampling: u16) -> eframe::NativeOptions {

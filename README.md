@@ -1,10 +1,12 @@
 # OpenSlicer
 
+<img src="assets/icon-256.png" alt="OpenSlicer icon" width="96" align="right">
+
 **Open-source, offline software for splitting oversized 3D models into printable parts, joining them with real printable connectors, and planning the assembly.**
 
 Written entirely in Rust. Runs locally: no account, no subscription, no cloud, no network. An open alternative to commercial large-model splitting tools such as LuBan 3D.
 
-> **Version 0.1.0.** The geometry engines, command-line tool and the desktop app (automatic, grid and manual-plane splitting, joints for thin shells, part labels, assembly playback, verified export, undo/redo, projects) work and are tested on real generated geometry. Several features are not built yet and a few are weak; both are listed plainly in [Limits and what is not built yet](#limits-and-what-is-not-built-yet). OpenSlicer reports a failed check instead of claiming success, but **always inspect exported parts in your slicer before printing**, and print a test joint first.
+> **Version 0.2.0.** The geometry engines, command-line tool and the desktop app (STEP/STL/OBJ/3MF import, automatic, grid and manual-plane splitting with planes placed on a clicked face, per-join connector choices, joints for thin shells, part labels, assembly playback, verified export, undo/redo, projects) work and are tested on real generated geometry. Several features are not built yet and a few are weak; both are listed plainly in [Limits and what is not built yet](#limits-and-what-is-not-built-yet). OpenSlicer reports a failed check instead of claiming success, but **always inspect exported parts in your slicer before printing**, and print a test joint first.
 
 ![A 900 mm wing split into 8 parts that fit a Prusa MK4: every check passed](docs/images/split-result.png)
 
@@ -22,11 +24,11 @@ The Windows build is produced and tested by GitHub Actions. **A person has not y
 
 ## Quick start (desktop app)
 
-1. **Open** a model (STL, OBJ, 3MF; drag-and-drop works), or **Stock** to import one of the three built-in sample models.
+1. **Open** a model (STL, OBJ, 3MF or **STEP**; drag-and-drop works), or **Stock** to import one of the three built-in sample models.
 2. **Printer**: pick one of 20 common printers or type your own build volume and margin. The viewport warns when a model does not fit.
 3. **Split**: choose a layout (automatic, grid, every N mm, or **manual planes** you drag in the viewport), a connector type, size and clearance, and optionally **part labels**. Run it; progress and a Cancel button show while it works.
 4. Review the summary: parts fitting the printer, connectors placed, and every problem found. Parts are coloured individually. Drag the **Exploded view** slider, or use **Assembly playback** (Back / Next / Play) to watch the assembly being built step by step.
-5. **Export parts** writes one STL/OBJ/3MF per part, assembly instructions (HTML), an **assembly CSV**, optional build plates and a `manifest.json`, then re-imports everything and checks it before reporting success.
+5. **Export parts** writes one STL, OBJ, 3MF or STEP file per part (your choice), assembly instructions (HTML), an **assembly CSV**, optional build plates and a `manifest.json`, then re-imports everything and checks it before reporting success.
 
 |  |  |
 |---|---|
@@ -34,18 +36,20 @@ The Windows build is produced and tested by GitHub Actions. **A person has not y
 | ![Printer presets](docs/images/printer-presets.png) **Printer presets.** 20 common printers plus custom volumes. | ![Stock models](docs/images/stock-models.png) **Stock models.** Three oversized samples generated inside the app. |
 | ![Exploded view](docs/images/exploded-view.png) **Exploded view.** The 8 wing parts pulled apart, pin sockets visible. | ![Restore session](docs/images/restore-session.png) **Autosave.** Your last session is offered back after a crash or close. |
 | ![Manual planes](docs/images/manual-planes.png) **Manual cutting planes.** A translucent plane and the outline where it cuts the model; drag it in the viewport or type its position. | ![Part colours](docs/images/part-colours.png) **Part colours.** Every part of a result has its own colour. |
-| ![Assembly playback](docs/images/assembly-playback.png) **Assembly playback.** Step 3 of 8: only the parts placed so far are shown. | |
+| ![Assembly playback](docs/images/assembly-playback.png) **Assembly playback.** Step 3 of 8: only the parts placed so far are shown. | ![Plane from a face](docs/images/plane-from-face.png) **Plane from a face.** Click a face and a plane is placed flush with it (two tilt fields give it any direction). |
+| ![Join choices](docs/images/join-choices.png) **Join choices.** After a split, each seam can keep the automatic connector, stay plain, or use another type. | |
 
 ---
 
 ## What works
 
 **Desktop app**
-- Import STL (binary and ASCII), OBJ, 3MF; multiple models; drag-and-drop; command-line file arguments.
+- Import STL (binary and ASCII), OBJ, 3MF and **STEP** (see [STEP files](#step-files)); multiple models; drag-and-drop; command-line file arguments.
 - 3D viewport with build plate, build-volume wireframe, orbit/pan/zoom, view presets, click-to-select, Move tool; numeric position, rotation, scale and size; drop-to-plate.
 - Mesh inspection: triangles, area, volume, open and non-manifold edges, degenerate triangles, inverted normals (shown in orange).
 - **Printer profiles:** 20 presets, editable volume and margin, per-axis over-size report, saved between sessions.
-- **Split window:** automatic layout (searches grid rotation and axis assignment for the fewest parts that fit), grid, every-N-mm cuts, or **manual planes** (axis, position and tilt, with a live translucent preview and the outline where each plane cuts the model; drag a plane in the viewport to move it); 11 connector kinds; clearance; optional repair first, nesting onto plates, an assembly interpenetration check, and **part labels**. Runs in a background job with progress and cancel.
+- **Split window:** automatic layout (searches grid rotation and axis assignment for the fewest parts that fit), grid, every-N-mm cuts, or **manual planes** (axis, position and two tilts, so a plane can face almost any direction, with a live translucent preview and the outline where each plane cuts the model; drag a plane in the viewport to move it, or click **Plane from a face** and then a face of the model to place a plane flush with it); 11 connector kinds; clearance; optional repair first, nesting onto plates, an assembly interpenetration check, **part labels**, and a switch that nudges automatic cuts away from tiny slivers. Runs in a background job with progress and cancel.
+- **Join choices:** after a split, a **Joins** list shows every seam; set each to the automatic connector, to no connector, or to another connector type, then press Split again (the original model is re-split with the same cuts).
 - **Result view:** a pass/fail summary listing every problem and note, per-part colours, an exploded view slider, and **assembly playback** (Back, Next, Play, All, with a one-line description of each step and the part being placed highlighted).
 - **Undo / redo** (Edit menu, Ctrl+Z / Ctrl+Y) for adding, removing, moving, rotating, scaling and renaming models. A whole drag or typed value is one step; split results are regenerated rather than undone.
 - **Part labels:** the part number and its assembly step (for example `P07-3`) engraved into or raised from each part. See below.
@@ -57,7 +61,8 @@ The Windows build is produced and tested by GitHub Actions. **A person has not y
 **Geometry engines** (used by the app and the CLI)
 - **Cutting:** exact plane cuts with capping, verified watertight and volume-conserving; grid, modular, brick and arbitrary-plane layouts; disconnected solids separated; sliver pieces merged.
 - **Connectors:** pin and socket, dowel, dovetail, tab-and-slot, puzzle, lip (follows the cut boundary), lap joint, terrace, pyramid, claw, and the **finger joint** for thin and curved walls. Automatic placement, configurable clearance. Every connector is checked against the real pieces with Booleans.
-- **Thin curved shells:** where a pin, tab or lip does not fit a wall (a 3 mm skin, a 4 mm shell), OpenSlicer falls back to a **finger joint** automatically and says so in the notes. Alternate strips along the seam are handed from one piece to the other by Boolean operations on the real pieces, so the joint follows any curve and needs no wall thickness. Both pieces are verified to be closed solids, their volumes must change by exactly the material moved, and the assembled pieces must not overlap.
+- **Thin curved shells:** where a pin, tab or lip does not fit a wall (a 3 mm skin, a 4 mm shell), OpenSlicer falls back to a **finger joint** automatically and says so in the notes. Alternate strips along the seam are handed from one piece to the other by Boolean operations on the real pieces, so the joint follows any curve and needs no wall thickness. Both pieces are verified to be closed solids, their volumes must change by exactly the material moved, and the assembled pieces must not overlap. A seam joined this way is marked **glue required** in the HTML instructions, the CSV (`needs_glue`) and the playback text, because finger joints stop sideways sliding but not pulling apart.
+- **Sliver avoidance:** an automatic cut (auto, grid or every-N-mm layout; never a manual plane) that would leave a tiny floating island in its cross-section (under 25 mm²) is moved up to 2 % of the model size (0.5 to 4 mm) to the nearest position that has fewer such islands while still cutting the model. Every move is listed in the notes. Turn it off with the checkbox or `--keep-cuts`.
 - **Machine-aware output:** build volume and margin, every part checked in every orientation, print-orientation export, rectangle nesting onto plates.
 - **Assembly planning:** contact-driven ordering, exploded offsets, per-step SVG diagrams, HTML instructions and a CSV table (step, part, file, label, parts it attaches to, contact area, joints and their types, size, volume, build plate, fits printer).
 - **Mesh operations (CLI):** union, subtract, intersect; repair (weld, orient, fill small holes); hollowing with drain holes.
@@ -154,6 +159,14 @@ Exit codes: `0` success, `1` failure, `2` usage error, `3` finished but the resu
 
 They are generated by code (no data files), tested for closed, consistently oriented surfaces and analytic volume, and split through the real pipeline in automated tests on several printers. The solid wing connects with pins; the dome and the panel connect on every seam with finger joints. All three export, re-import and verify, with labels and the CSV.
 
+### STEP files
+
+**Import** (`.step`, `.stp` text files) reads two kinds of solid. *Faceted* B-reps (what mesh-to-STEP converters and OpenSlicer's own export write) are read exactly. *Exact* B-reps (planes, cylinders, cones, spheres, tori, B-spline and NURBS surfaces, as far as the pure-Rust `truck` STEP reader supports them) are tessellated to a 0.1 %-of-size chord tolerance, so curved surfaces become fine triangle meshes. Lengths in metres, centimetres, millimetres or inches are converted to millimetres. Unsupported geometry produces an error that says so; it is never silently dropped. Not read: assembly placements (parts inside an assembly are read at their own origin), colours, names, product structure, and surfaces `truck` does not support.
+
+**Export** writes a *faceted* B-rep: every triangle becomes a face. It opens in CAD programs that read faceted solids, but it is a mesh in a STEP file, not a parametric model, and the files are large (about 140 bytes per triangle). Each export is read back by OpenSlicer and compared before it is reported as done.
+
+**What is and is not verified:** the import was tested on solids generated by `truck` (a curved cylinder), on faceted files OpenSlicer writes, on larger polygon faces, and on unit conversion; the export was read back by OpenSlicer's own reader. **No file from SolidWorks, Fusion 360, FreeCAD, Onshape or other CAD software, and no other program's reader, has been tried**, so expect some real-world files to be rejected.
+
 ### Part labels and the assembly CSV
 
 *Labels:* Split window ▸ Part labels ▸ **Engraved (inset)** or **Raised (outset)** (CLI: `--labels inset|outset`, `--label-height`, `--label-depth`). Each part gets its number and assembly step, for example `P07-3` (part 7, third to assemble), built from seven-segment strokes so no font is needed. The label goes on a **flat patch** of the part's own surface found by ray sampling, so it never lands on a pin, a finger step or a socket. Engraved labels prefer hidden places (the inside of a shell, a mating cut face); raised labels are never put on a mating face. The text is added or subtracted with a Boolean and verified (closed solid, exact volume change, raised text fused to the part). Parts with no flat area, or too thin for the relief, are left unlabelled and listed; a label is never forced on.
@@ -195,8 +208,8 @@ Build volumes are the manufacturers' published figures, entered from memory and 
 
 | Area | Missing |
 |---|---|
-| Interactive editing | Manual planes are axis-based with a tilt about one other axis (no free 3D rotation handle); no click-to-select of faces; no per-connector add/move/remove; no editing of cuts after a split other than re-running it |
-| Thin curved shells | Surface-following **lap joints and lips** on curved 3 mm walls still often fail verification and are replaced by finger joints; no topology-aware cutting that avoids tiny awkward sections; no reinforcement ribs; finger joints lock pieces against sliding along the seam and in the cut direction but need glue or a clip across the seam |
+| Interactive editing | No free 3D rotation *handle* (planes are set by two tilt fields or from a clicked face); no per-connector add, move or remove (the choice is per seam, not per pin); face picking selects a flat plane, not a face region; no editing of cuts after a split other than changing planes and pressing Split again |
+| Thin curved shells | Surface-following **lap joints and lips** on curved 3 mm walls still often fail verification and are replaced by finger joints; **reinforcement ribs are not built**; finger joints lock pieces against sliding along the seam and in the cut direction but need glue or a clip across the seam (they are now marked as needing glue); sliver avoidance only looks at the size of the islands in a cut's cross-section, not at the wider shape of the pieces |
 | GUI coverage | Repair, hollowing, Booleans, image tools and the alternative construction methods are **CLI-only**; batch processing of several models in one GUI run; nesting preview; light theme; searchable settings; labels cannot be placed or moved by hand |
 | Validation | A dedicated thin-wall check (only connector-fit and label-thickness checks exist); alignment and missing-section checks beyond the interpenetration check; checks of dimensions against tolerances |
 | Projects | `.osproj` stores models, positions, printer and settings but **not generated parts or assembly relationships**: they are regenerated by running the split again; the undo history is not saved |
@@ -204,7 +217,8 @@ Build volumes are the manufacturers' published figures, entered from memory and 
 | Packaging | Installer (intentionally none: one `.exe` only); code signing, so Windows SmartScreen may warn; macOS and Linux binaries |
 
 **Weak spots in what exists**
-- **Finger joints** need walls of at least about 1.5 mm and a seam long enough for two strips; they are a general fallback, not the strongest joint for thick solid parts (use pins or dovetails there). Fingers are rectangular, with no taper or snap.
+- **Finger joints** need walls of at least about 1.5 mm and a seam long enough for two strips; they are a general fallback, not the strongest joint for thick solid parts (use pins or dovetails there). Fingers are rectangular, with no taper or snap. A tapered (dovetail) finger cannot be assembled on a closed ring of wall, which is why they are not tapered.
+- **STEP import** is tested on the reader's own generated solids and on faceted files, not on files from commercial CAD packages. See [STEP files](#step-files).
 - **Pins, dowels, tabs, puzzle, pyramid and claw** need a wall of about 4.3 mm or more; on thinner walls the finger joint takes over (unless you disable the fallback in a settings file).
 - **Lip and lap joints** often fail Boolean verification on curved thin walls; the fallback then applies and is noted.
 - **Dovetails** can be refused (the neck becomes too narrow) or, on large solid parts, fail the volume check; the fallback applies, or the piece is left without connectors and reported.
@@ -218,7 +232,7 @@ Build volumes are the manufacturers' published figures, entered from memory and 
 - **Windows:** built and tested by CI only; no human run yet.
 - **Real prints:** connector clearances are presets, not measured fits. Print a test joint first.
 - **Automotive scale:** a real Miata-hardtop-class scan has not been processed. Measured so far: a 1M-triangle plane cut with full verification took about 0.8 s, a 1M-triangle Boolean about 4.5 s, a 1M-triangle STL loads in under 3 s with about 260 MB. Real thin, curved, self-intersecting shells may expose more problems than the stock panel does.
-- The GUI was exercised on Linux under software OpenGL with scripted mouse input (open, stock import, printer presets, split, manual plane dragging, part colours, assembly playback, undo through the Edit menu, autosave and restore). **Keyboard shortcuts could not be exercised in that rig** (no key events reach the window under Xvfb without a window manager), so they are untested; the same actions are in the menus. There is no automated GUI test suite.
+- The GUI was exercised on Linux under software OpenGL with scripted mouse input (open including a STEP file, stock import, printer presets, split, manual plane dragging, plane from a clicked face, per-join choices, part colours, assembly playback, undo through the Edit menu, autosave and restore). **Keyboard shortcuts could not be exercised in that rig** (no key events reach the window under Xvfb without a window manager), so they are untested; the same actions are in the menus. There is no automated GUI test suite.
 
 See [docs/known-limitations.md](docs/known-limitations.md) for more detail.
 
@@ -231,7 +245,7 @@ See [docs/known-limitations.md](docs/known-limitations.md) for more detail.
 | Ctrl+O / Ctrl+Shift+O | Open model / open project |
 | Ctrl+S | Save project |
 | Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) | Undo / redo |
-| Ctrl+E | Export selected model as STL |
+| Ctrl+E | Export selected model (STL, OBJ, 3MF or STEP) |
 | F | Fit view to selection (or plate) |
 | 1 2 3 4 | Isometric / top / front / right view |
 | Delete | Remove selected model |

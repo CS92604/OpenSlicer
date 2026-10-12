@@ -23,6 +23,10 @@ serde.workspace = true
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "x11", "wayland", "persistence"] }
 egui_glow = "0.36"
 rfd = "0.17"
+image.workspace = true
 
 [dev-dependencies]
 ron = "0.12"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

@@ -8,7 +8,7 @@ use eframe::egui;
 use openslicer_core::control::Control;
 use openslicer_core::{Mesh, MeshStats};
 use openslicer_io::stl;
-use openslicer_project::export::{export, ExportOptions};
+use openslicer_project::export::{export, ExportFormat, ExportOptions};
 use openslicer_project::pipeline::{run_split, PipelineError, SplitOutcome};
 use openslicer_project::profile::PrinterProfile as ProjectPrinter;
 use openslicer_project::settings::SplitSettings;
@@ -97,11 +97,18 @@ pub fn spawn_split(ctx: &egui::Context, name: String, mesh: Mesh, printer: Proje
 }
 
 /// Writes the parts, instructions and manifest of a finished split into `dir`, then re-imports and checks them.
-pub fn spawn_export_split(ctx: &egui::Context, outcome: Arc<SplitOutcome>, printer: ProjectPrinter, model: String, dir: PathBuf) -> Job {
+pub fn spawn_export_split(
+    ctx: &egui::Context,
+    outcome: Arc<SplitOutcome>,
+    printer: ProjectPrinter,
+    model: String,
+    dir: PathBuf,
+    format: ExportFormat,
+) -> Job {
     spawn(ctx, format!("Exporting {model} parts"), move |progress, cancel| {
         let report = |f: f32, what: &str| progress(format!("{what} ({:.0}%)", f * 100.0));
         let ctl = Control::new(cancel, &report);
-        let opts = ExportOptions { model_name: model.clone(), print_orientation: false, ..Default::default() };
+        let opts = ExportOptions { model_name: model.clone(), format, print_orientation: false, ..Default::default() };
         match export(&outcome, &printer, &opts, &dir, &ctl) {
             Ok(r) => JobEvent::Exported {
                 path: dir,
@@ -138,8 +145,18 @@ pub fn spawn_load(ctx: &egui::Context, path: PathBuf) -> Job {
 pub fn spawn_export(ctx: &egui::Context, mesh: Mesh, path: PathBuf) -> Job {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     spawn(ctx, format!("Exporting {name}"), move |progress, cancel| {
-        progress("Encoding STL…".into());
-        let bytes = stl::write_binary(&mesh);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("stl").to_ascii_lowercase();
+        progress(format!("Encoding {}…", ext.to_ascii_uppercase()));
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "model".into());
+        let bytes = match ext.as_str() {
+            "obj" => openslicer_io::obj::write(&mesh, &stem).into_bytes(),
+            "step" | "stp" => openslicer_io::step::write(&mesh, &stem).into_bytes(),
+            "3mf" => match openslicer_io::threemf::write(&[(stem.as_str(), &mesh)]) {
+                Ok(b) => b,
+                Err(e) => return JobEvent::Failed { title: format!("Could not encode {name}"), detail: e.to_string() },
+            },
+            _ => stl::write_binary(&mesh),
+        };
         if cancel.load(Ordering::Relaxed) {
             return JobEvent::Cancelled;
         }
@@ -154,7 +171,7 @@ pub fn spawn_export(ctx: &egui::Context, mesh: Mesh, path: PathBuf) -> Job {
             return JobEvent::Cancelled;
         }
         progress("Verifying exported file…".into());
-        let summary = match verify_export(&mesh, &tmp) {
+        let summary = match verify_export(&mesh, &tmp, &ext) {
             Ok(s) => s,
             Err(detail) => {
                 let _ = std::fs::remove_file(&tmp);
@@ -182,8 +199,8 @@ fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Re-imports the written file and compares it with the source mesh.
-pub fn verify_export(source: &Mesh, written: &Path) -> Result<String, String> {
-    let back = openslicer_io::load_mesh_as(written, "stl").map_err(|e| format!("the written file cannot be re-imported: {e}"))?;
+pub fn verify_export(source: &Mesh, written: &Path, ext: &str) -> Result<String, String> {
+    let back = openslicer_io::load_mesh_as(written, ext).map_err(|e| format!("the written file cannot be re-imported: {e}"))?;
     let (a, b) = (source.stats(), back.stats());
     if a.triangle_count != b.triangle_count {
         return Err(format!("triangle count changed: wrote {}, re-imported {}", a.triangle_count, b.triangle_count));
@@ -210,14 +227,14 @@ mod tests {
         let mesh = Mesh::cuboid(Vec3::new(10.0, 20.0, 30.0));
         let good = dir.join("good.stl");
         std::fs::write(&good, stl::write_binary(&mesh)).unwrap();
-        assert!(verify_export(&mesh, &good).is_ok());
+        assert!(verify_export(&mesh, &good, "stl").is_ok());
 
         let mut bytes = stl::write_binary(&mesh);
         bytes.truncate(bytes.len() - 50);
         bytes[80..84].copy_from_slice(&11u32.to_le_bytes());
         let bad = dir.join("bad.stl");
         std::fs::write(&bad, bytes).unwrap();
-        assert!(verify_export(&mesh, &bad).is_err());
+        assert!(verify_export(&mesh, &bad, "stl").is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

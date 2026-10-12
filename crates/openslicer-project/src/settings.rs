@@ -58,6 +58,14 @@ pub struct SplitSettings {
     /// Engrave or raise the part number and assembly step on each part.
     #[serde(default)]
     pub labels: crate::labels::LabelOptions,
+    /// Move automatic cut planes a few millimetres when that avoids tiny awkward islands in the cross-section.
+    /// Manual planes are never moved.
+    #[serde(default = "default_true")]
+    pub avoid_slivers: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for SplitSettings {
@@ -71,6 +79,7 @@ impl Default for SplitSettings {
             nest: false,
             verify_assembly: false,
             labels: Default::default(),
+            avoid_slivers: true,
         }
     }
 }

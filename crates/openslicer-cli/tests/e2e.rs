@@ -261,3 +261,38 @@ fn thin_shell_with_labels_writes_a_csv_and_verifies() {
     assert_ne!(code, 0, "{text}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn step_files_are_read_split_and_written() {
+    let d = dir("step");
+    let model = d.join("big.step");
+    block(&model, Vec3::new(300.0, 100.0, 50.0));
+    let (code, text, err) = run(&["info", model.to_str().unwrap()]);
+    assert_eq!(code, 0, "{text}{err}");
+    let out = d.join("out");
+    let (code, text, err) = run(&[
+        "split",
+        model.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+        "--layout",
+        "grid",
+        "--grid",
+        "2,1,1",
+        "--connector",
+        "comb",
+        "--format",
+        "step",
+    ]);
+    assert_eq!(code, 0, "{text}{err}");
+    let parts: Vec<_> =
+        std::fs::read_dir(&out).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "step")).collect();
+    assert_eq!(parts.len(), 2);
+    let csv = std::fs::read_to_string(out.join("big_assembly.csv")).unwrap();
+    assert!(
+        csv.lines().next().unwrap().contains("needs_glue") && csv.contains(",yes,"),
+        "finger joints are marked as needing glue:\n{csv}"
+    );
+    assert_eq!(run(&["verify", out.to_str().unwrap()]).0, 0);
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -190,7 +190,20 @@ pub fn run_split(mesh: &Mesh, printer: &PrinterProfile, settings: &SplitSettings
 
     // 2. Plan.
     ctl.report(0.05, "Planning the cuts");
-    let (plan, tiling, _) = plan_for(&work, printer, settings, &ctl.sub(0.05, 0.15))?;
+    let (mut plan, tiling, _) = plan_for(&work, printer, settings, &ctl.sub(0.05, 0.15))?;
+    if settings.avoid_slivers && !matches!(settings.layout, Layout::Planes(_)) {
+        let diag = work.bounds().map_or(0.0, |b| f64::from((b.max - b.min).length()));
+        let range = (diag * 0.02).clamp(0.5, 4.0);
+        for n in crate::nudge::avoid_slivers(&work, &mut plan, range, 25.0) {
+            notes.push(format!(
+                "cut {} moved {:+.1} mm to avoid {} tiny island(s) in its cross-section ({} remain)",
+                n.cut + 1,
+                n.shift,
+                n.islands_before,
+                n.islands_after
+            ));
+        }
+    }
     let cut_count = plan.len();
     if let Some(t) = &tiling {
         notes.push(format!(
@@ -250,10 +263,14 @@ pub fn run_split(mesh: &Mesh, printer: &PrinterProfile, settings: &SplitSettings
             for n in &res.report.notes {
                 notes.push(format!("connectors: {n}"));
             }
-            if res.report.interfaces_connected < res.report.interfaces_total {
+            if res.report.left_open > 0 {
+                notes.push(format!("connectors: {} join(s) left plain by your choice", res.report.left_open));
+            }
+            let accounted = res.report.interfaces_connected + res.report.left_open;
+            if accounted < res.report.interfaces_total {
                 problems.push(format!(
                     "connectors: {} of {} interfaces have no connector",
-                    res.report.interfaces_total - res.report.interfaces_connected,
+                    res.report.interfaces_total - accounted,
                     res.report.interfaces_total
                 ));
             }

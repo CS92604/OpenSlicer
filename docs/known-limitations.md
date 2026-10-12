@@ -1,10 +1,10 @@
 # Known limitations
 
-Honest status for 0.1.0. The README's "Limits and what is not built yet" section is the summary; this file adds detail.
+Honest status for 0.2.0. The README's "Limits and what is not built yet" section is the summary; this file adds detail.
 
 ## Not built yet
-- **Interactive editing:** manual planes are axis-based with one tilt; no free 3D rotation handle, face picking, per-connector editing, or editing of cuts after a split (re-run it).
-- **Thin curved shells:** no surface-following lap joints or lips that reliably work on 3-4 mm curved walls (the finger joint is the fallback); no topology-aware cutting that avoids tiny awkward sections; no reinforcement.
+- **Interactive editing:** planes are set with two tilt fields or from a clicked face, not with a 3D rotation handle; face picking places a plane on the clicked triangle's orientation, not on a whole face region; joins can be changed per seam (automatic, none, or another type) but not per pin; cuts cannot be edited after a split other than changing the planes and splitting again.
+- **Thin curved shells:** no surface-following lap joints or lips that reliably work on 3-4 mm curved walls (the finger joint is the fallback); no reinforcement ribs. Automatic cuts are nudged away from tiny floating islands in their cross-section, but cutting is not otherwise aware of the shape of the pieces it leaves.
 - **GUI coverage:** repair, hollowing, Booleans, image tools and alternative construction methods exist only in `openslicer-cli`. No GUI batch run over several models, no light theme, no searchable settings, no hand placement of labels.
 - **Validation:** no dedicated thin-wall check; no tolerance checks of dimensions; the assembly check looks for interpenetration only.
 - **Projects:** `.osproj` stores models, positions, the printer and the split settings. Generated parts, assembly relationships and the undo history are not stored; run the split again after reopening.
@@ -12,7 +12,7 @@ Honest status for 0.1.0. The README's "Limits and what is not built yet" section
 - **Packaging:** one unsigned `openslicer.exe` only; SmartScreen may warn. No installer by design.
 
 ## Weak spots
-- Finger joints need walls of about 1.5 mm or more and a seam long enough for two strips. They are rectangular, with no taper or snap, and lock the pieces against sliding along the seam and in the cut direction but not across it, so they need glue or a clip. For thick solid parts pins or dovetails are the better choice.
+- Finger joints need walls of about 1.5 mm or more and a seam long enough for two strips. They are rectangular, with no taper or snap, and lock the pieces against sliding along the seam and in the cut direction but not across it, so they need glue or a clip; the instructions and the CSV mark such seams. (A tapered finger would lock, but could not be assembled on a closed ring of wall.) For thick solid parts pins or dovetails are the better choice.
 - Pins, dowels, tabs, puzzle, pyramid and claw need a wall of roughly 4.3 mm or more. Thinner walls fall back to a finger joint (policy `Comb`, the default) or are skipped (policy `Skip`/`ShrinkToFit` in a settings file).
 - Lip and lap joints often fail Boolean verification on curved thin walls; the fallback applies and is noted.
 - Dovetails can be refused (neck too narrow) or fail the volume check on large solid parts.
@@ -25,6 +25,7 @@ Honest status for 0.1.0. The README's "Limits and what is not built yet" section
 - `boolmesh` is MPL-2.0 (see dependencies.md).
 
 ## Not verified
+- **STEP:** import and export were tested on generated solids, faceted files and OpenSlicer's own output, read back by OpenSlicer's own reader. No file from commercial CAD software and no other program's STEP reader has been tried. Assembly placements, colours and names are ignored.
 - **Windows:** built and tested by GitHub Actions; no human has run the `.exe`. Title-bar theming and the Segoe UI font path are untested.
 - **Real prints:** clearances are presets, not measured fits.
 - **Automotive scale:** no real hardtop-class model has been processed. Measured on generated geometry: a 1M-triangle plane cut with full verification about 0.8 s; a `boolmesh` union on a 1M-triangle mesh about 4.5 s; a 1M-triangle STL loads in under 3 s using about 260 MB.

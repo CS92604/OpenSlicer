@@ -1,6 +1,7 @@
 //! Mesh file import and export.
 
 pub mod obj;
+pub mod step;
 pub mod stl;
 pub mod threemf;
 
@@ -17,7 +18,9 @@ pub enum IoError {
     InvalidObj(String),
     #[error("invalid 3MF file: {0}")]
     Invalid3mf(String),
-    #[error("unsupported file type '{0}'. Supported formats: STL, OBJ, 3MF")]
+    #[error("invalid STEP file: {0}")]
+    InvalidStep(String),
+    #[error("unsupported file type '{0}'. Supported formats: STL, OBJ, 3MF, STEP (.step, .stp)")]
     UnsupportedFormat(String),
     #[error("the file contains no triangles")]
     Empty,
@@ -36,6 +39,7 @@ pub fn load_mesh_as(path: &Path, ext: &str) -> Result<Mesh, IoError> {
         "stl" => stl::read(&std::fs::read(path)?),
         "obj" => obj::read(&std::fs::read(path)?),
         "3mf" => threemf::read(&std::fs::read(path)?),
+        "step" | "stp" => step::read(&std::fs::read(path)?),
         other => Err(IoError::UnsupportedFormat(other.to_string())),
     }
 }
@@ -51,7 +55,7 @@ pub(crate) fn weld(tris: Vec<[glam::Vec3; 3]>) -> Mesh {
     Mesh::from_triangle_soup(tris, ((hi - lo).length() * 1e-6).max(1e-9))
 }
 
-/// Writes a mesh by extension: `.stl` (binary), `.obj` or `.3mf`.
+/// Writes a mesh by extension: `.stl` (binary), `.obj`, `.3mf` or `.step` (faceted B-rep).
 pub fn save_mesh(path: &Path, mesh: &Mesh) -> Result<(), IoError> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "model".into());
@@ -59,6 +63,7 @@ pub fn save_mesh(path: &Path, mesh: &Mesh) -> Result<(), IoError> {
         "stl" => stl::write_binary(mesh),
         "obj" => obj::write(mesh, &name).into_bytes(),
         "3mf" => threemf::write(&[(name.as_str(), mesh)])?,
+        "step" | "stp" => step::write(mesh, &name).into_bytes(),
         other => return Err(IoError::UnsupportedFormat(other.to_string())),
     };
     write_atomic(path, &bytes)
@@ -94,7 +99,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut m = Mesh::cuboid(Vec3::new(10.0, 20.0, 30.0));
         m.translate(Vec3::new(5.0, 5.0, 5.0));
-        for ext in ["stl", "obj", "3mf"] {
+        for ext in ["stl", "obj", "3mf", "step"] {
             let path = dir.join(format!("part.{ext}"));
             save_mesh(&path, &m).unwrap();
             let back = load_mesh(&path).unwrap();
@@ -104,7 +109,7 @@ mod tests {
             assert_eq!(back.bounds().unwrap().size(), m.bounds().unwrap().size(), "{ext}");
             assert!(!dir.join(format!("part.{ext}.openslicer-tmp")).exists());
         }
-        assert!(matches!(save_mesh(&dir.join("x.step"), &m), Err(IoError::UnsupportedFormat(_))));
+        assert!(matches!(save_mesh(&dir.join("x.xyz"), &m), Err(IoError::UnsupportedFormat(_))));
         std::fs::remove_dir_all(&dir).ok();
     }
 

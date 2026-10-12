@@ -25,6 +25,8 @@ pub enum ExportFormat {
     Obj,
     #[serde(rename = "3mf")]
     ThreeMf,
+    /// Faceted STEP B-rep (one face per triangle).
+    Step,
 }
 
 impl ExportFormat {
@@ -33,6 +35,7 @@ impl ExportFormat {
             ExportFormat::Stl => "stl",
             ExportFormat::Obj => "obj",
             ExportFormat::ThreeMf => "3mf",
+            ExportFormat::Step => "step",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -40,6 +43,7 @@ impl ExportFormat {
             "stl" => Some(Self::Stl),
             "obj" => Some(Self::Obj),
             "3mf" => Some(Self::ThreeMf),
+            "step" | "stp" => Some(Self::Step),
             _ => None,
         }
     }
@@ -500,6 +504,7 @@ pub fn assembly_csv(outcome: &SplitOutcome, steps: &[AssemblyStep], parts: &[Par
         "contact_area_mm2",
         "connectors",
         "connector_types",
+        "needs_glue",
         "loose_parts",
         "starts_subassembly",
         "size_x_mm",
@@ -513,7 +518,15 @@ pub fn assembly_csv(outcome: &SplitOutcome, steps: &[AssemblyStep], parts: &[Par
     out.push('\n');
     let plate_of = |name: &str| plates.iter().find(|p| p.parts.iter().any(|q| q == name)).map(|p| p.index.to_string()).unwrap_or_default();
     let kind_of = |id: &str| outcome.connectors.iter().find(|c| c.id == id).map_or("", |c| c.kind.label());
-    let mut row = |step: String, name: &str, kind: &str, attach: String, area: String, conns: &[String], loose: &[String], sub: String| {
+    let mut row = |step: String,
+                   name: &str,
+                   kind: &str,
+                   attach: String,
+                   area: String,
+                   conns: &[String],
+                   glue: bool,
+                   loose: &[String],
+                   sub: String| {
         let part = parts.iter().find(|p| p.name == name);
         let label = outcome.labels.iter().find(|l| outcome.pieces.iter().any(|p| p.name == name && p.id == l.piece_id));
         let mut kinds: Vec<&str> = conns.iter().map(|c| kind_of(c)).collect();
@@ -530,6 +543,7 @@ pub fn assembly_csv(outcome: &SplitOutcome, steps: &[AssemblyStep], parts: &[Par
             area,
             conns.join(" "),
             kinds.join(" + "),
+            if glue { "yes" } else { "no" }.to_owned(),
             loose.join(" "),
             sub,
             part.map(|p| format!("{:.1}", p.size[0])).unwrap_or_default(),
@@ -552,12 +566,13 @@ pub fn assembly_csv(outcome: &SplitOutcome, steps: &[AssemblyStep], parts: &[Par
             attach,
             area,
             &s.connectors,
+            s.needs_glue,
             &s.loose,
             if s.starts_subassembly { "yes" } else { "no" }.into(),
         );
     }
     for l in &outcome.loose {
-        row(String::new(), &l.name, "loose", String::new(), String::new(), &[], &[], String::new());
+        row(String::new(), &l.name, "loose", String::new(), String::new(), &[], false, &[], String::new());
     }
     out
 }
@@ -913,7 +928,7 @@ mod tests {
     #[test]
     fn every_format_round_trips_with_matching_volume() {
         let (out, printer) = outcome(false, None);
-        for fmt in [ExportFormat::Stl, ExportFormat::Obj, ExportFormat::ThreeMf] {
+        for fmt in [ExportFormat::Stl, ExportFormat::Obj, ExportFormat::ThreeMf, ExportFormat::Step] {
             let dir = temp_dir(fmt.extension());
             let rep = export(
                 &out,

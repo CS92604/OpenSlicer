@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn unsupported_extension_is_reported() {
-        let r = crate::load_mesh(std::path::Path::new("x.step"));
+        let r = crate::load_mesh(std::path::Path::new("x.xyz"));
         assert!(matches!(r, Err(IoError::UnsupportedFormat(_))));
     }
 }
