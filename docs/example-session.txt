@@ -1,0 +1,44 @@
+$ openslicer-cli stock
+dome   Dome shell - A 400 mm hemispherical helmet shell with a 4 mm wall, open at the bottom. A thin, doubly curved, hollow part: the case that needs seam-following joints.
+wing   Tapered wing - A solid 900 mm wing (NACA 0018 section) with taper and sweep. A long solid part that needs several cuts across its span.
+panel  Body panel - A 1100 × 600 mm compound-curved panel, 3 mm thick. A thin automotive-style skin like a bonnet or hardtop section.
+
+$ openslicer-cli stock wing -o wing.stl
+wrote wing.stl (384 triangles, 300 × 900 × 54 mm)
+
+$ openslicer-cli info wing.stl --printer "prusa mk4"
+wing.stl
+  384 triangles, 194 vertices, 300.0 × 900.0 × 54.0 mm
+  volume 5786.8 cm³, surface 4344.6 cm²
+  mesh: closed solid (open edges 0, non-manifold edges 0, degenerate triangles 0)
+  Prusa MK4 / MK4S: does not fit; needs splitting
+
+$ openslicer-cli split wing.stl -o out --printer "prusa mk4" --connector pin --nest
+wing: 8 parts from 4 cuts
+  grid 2×4×1 rotated 0°
+  22 connectors, 0 loose parts
+  all 8 parts fit the printer
+  4 build plate(s), 68% of the plate area used
+  note: auto-tiling: 2×4×1 cells of 150×225×54 mm, grid rotated 0° (about 8 pieces; 12 layouts compared)
+  wrote 14 files to out (verified by re-import)
+exit code: 0
+
+$ openslicer-cli verify out
+checked 13 files in out
+all files match the manifest and are valid
+exit code: 0
+$ openslicer-cli split dome.stl -o dome_out --printer "prusa mk4" --connector pin
+dome: 6 parts from 3 cuts
+  grid 2×3×1 rotated 0°
+  all 6 parts fit the printer
+  note: auto-tiling: 2×3×1 cells of 200×133×200 mm, grid rotated 0° (about 6 pieces; 12 layouts compared)
+  note: no connector between P01 and P02: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
+  note: no connector between P03 and P04: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
+  note: no connector between P05 and P06: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
+  note: no connector between P01 and P05: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
+  note: no connector between P02 and P06: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
+  note: no connector between P05 and P03: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
+  note: no connector between P06 and P04: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
+  PROBLEM: connectors: 7 of 7 interfaces have no connector
+  wrote 8 files to dome_out (verified by re-import)
+exit code: 3

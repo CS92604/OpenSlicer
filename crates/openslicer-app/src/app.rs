@@ -971,6 +971,7 @@ impl OpenSlicerApp {
                 self.open_project_file(path);
                 // The autosave is not the user's own project file.
                 self.project_path = None;
+                self.set_status("Restored your last session from the autosave", Level::Ok);
             } else {
                 let _ = std::fs::remove_file(&path);
             }
