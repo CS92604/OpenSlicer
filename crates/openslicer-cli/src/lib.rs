@@ -662,7 +662,14 @@ fn dispatch(cmd: Command, io: &mut Io) -> Res {
             let mesh = stock::build(&name).ok_or_else(|| format!("no stock model '{name}'; run `stock` to list them"))?;
             save_mesh(&output, &mesh).map_err(|e| format!("{}: {e}", output.display()))?;
             let size = mesh.stats().bounds.map(|b| b.size()).unwrap_or_default();
-            io.say(format!("wrote {} ({} triangles, {:.0} × {:.0} × {:.0} mm)", output.display(), mesh.triangles.len(), size.x, size.y, size.z));
+            io.say(format!(
+                "wrote {} ({} triangles, {:.0} × {:.0} × {:.0} mm)",
+                output.display(),
+                mesh.triangles.len(),
+                size.x,
+                size.y,
+                size.z
+            ));
             Ok(EXIT_OK)
         }
         Command::Printers => {
