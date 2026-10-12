@@ -1,0 +1,29 @@
+name: Windows package
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace --locked --release
+      - name: Build
+        run: cargo build --release --locked -p openslicer-app -p openslicer-cli
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/OpenSlicer | Out-Null
+          Copy-Item target/release/openslicer.exe, target/release/openslicer-cli.exe, README.md, LICENSE-MIT, LICENSE-APACHE dist/OpenSlicer/
+          Copy-Item docs dist/OpenSlicer/docs -Recurse
+          Compress-Archive -Path dist/OpenSlicer -DestinationPath OpenSlicer-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenSlicer-windows-x64
+          path: OpenSlicer-windows-x64.zip

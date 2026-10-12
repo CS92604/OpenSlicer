@@ -2,8 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,11 +29,13 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
       - name: Build release binary
-        run: cargo build --release --locked -p openslicer-app
+        run: cargo build --release --locked -p openslicer-app -p openslicer-cli
       - uses: actions/upload-artifact@v4
         with:
           name: openslicer-${{ matrix.os }}
           path: |
             target/release/openslicer
             target/release/openslicer.exe
+            target/release/openslicer-cli
+            target/release/openslicer-cli.exe
           if-no-files-found: ignore
