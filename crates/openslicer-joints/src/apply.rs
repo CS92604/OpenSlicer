@@ -13,6 +13,7 @@
 //!
 //! Anything that fails a check is rejected (with the reason recorded); nothing is applied silently.
 
+use crate::comb::{comb_joint, CombParams};
 use crate::placement::{self, FarthestPoint};
 use crate::settings::{AngleMode, ConnectorKind, ConnectorSettings, ThinWallPolicy};
 use crate::shapes::{self, Tools};
@@ -349,6 +350,8 @@ pub fn generate_joints(
     let mut connectors: Vec<ConnectorRecord> = Vec::new();
     let mut loose: Vec<Piece> = Vec::new();
     let max_id = pieces.iter().map(|p| p.id).max().unwrap_or(0);
+    // Finger joints modify both pieces of an interface, so they are made last, one interface at a time.
+    let mut comb_jobs: Vec<(usize, CombParams, Option<String>)> = Vec::new();
 
     for (ii, iface) in interfaces.iter().enumerate() {
         ctl.check()?;
@@ -361,10 +364,27 @@ pub fn generate_joints(
         let region = &iface.region.polygons;
         let frame = iface.region.frame;
         let rho = placement::inradius(region);
+        // Finger joints for thin walls: their width and reach come from the settings; when they stand in for another
+        // connector, sensible values are derived from that connector.
+        let comb_for = |s: &ConnectorSettings| {
+            if s.kind == ConnectorKind::Comb {
+                CombParams { width: s.size, length: s.height, clearance: s.clearance }
+            } else {
+                CombParams { width: (s.size * 2.0).max(10.0), length: s.height.max(8.0), clearance: s.clearance }
+            }
+        };
+        if settings.kind == ConnectorKind::Comb {
+            comb_jobs.push((ii, comb_for(settings), None));
+            continue;
+        }
         let st = match adjust_for_thin_wall(settings, rho) {
             Ok(s) => s,
             Err(e) => {
-                report.skipped.push((ii, e));
+                if settings.thin_wall == ThinWallPolicy::Comb {
+                    comb_jobs.push((ii, comb_for(settings), Some(e)));
+                } else {
+                    report.skipped.push((ii, e));
+                }
                 continue;
             }
         };
@@ -464,11 +484,7 @@ pub fn generate_joints(
                     }
                 }
                 // Thin or curved walls: if nothing validated, retry with a smaller connector.
-                if accepted == 0
-                    && st.thin_wall == ThinWallPolicy::ShrinkToFit
-                    && st.size * 0.8 >= st.min_feature
-                    && shrinks < MAX_SHRINK_ROUNDS
-                {
+                if accepted == 0 && st.thin_wall != ThinWallPolicy::Skip && st.size * 0.8 >= st.min_feature && shrinks < MAX_SHRINK_ROUNDS {
                     shrinks += 1;
                     st = scale_connector(&st, 0.8);
                     continue;
@@ -524,6 +540,10 @@ pub fn generate_joints(
                 Err(e) => last_error = e,
             }
         }
+        if accepted == 0 && settings.thin_wall == ThinWallPolicy::Comb {
+            comb_jobs.push((ii, comb_for(settings), Some(last_error)));
+            continue;
+        }
         if accepted > 0 {
             report.interfaces_connected += 1;
             if accepted < st.min_count {
@@ -537,7 +557,6 @@ pub fn generate_joints(
             report.skipped.push((ii, last_error));
         }
     }
-    report.connectors = connectors.len();
 
     // Apply the validated tools piece by piece and verify the result.
     let mut out_pieces = pieces.to_vec();
@@ -554,6 +573,53 @@ pub fn generate_joints(
             Err(e) => report.problems.push(format!("piece {}: {e}; it was left without connectors", pieces[slot].name)),
         }
     }
+
+    // Finger joints, on the pieces as they now are.
+    for (k, (ii, params, why)) in comb_jobs.into_iter().enumerate() {
+        ctl.check()?;
+        ctl.report(k as f32 / (k + 1) as f32, "Cutting finger joints");
+        let iface = &interfaces[ii];
+        let (Some(&ia), Some(&ib)) = (index.get(&iface.a), index.get(&iface.b)) else { continue };
+        let region = &iface.region.polygons;
+        let angle = principal_angle(region);
+        match comb_joint(&out_pieces[ia].mesh, &out_pieces[ib].mesh, &iface.region.frame, region, angle, &params) {
+            Ok(r) => {
+                for (slot, mesh) in [(ia, r.lower), (ib, r.upper)] {
+                    if let Some(mut np) = Piece::new(mesh) {
+                        np.id = out_pieces[slot].id;
+                        np.name = out_pieces[slot].name.clone();
+                        out_pieces[slot] = np;
+                    }
+                }
+                report.interfaces_connected += 1;
+                report.volume_added += r.moved;
+                report.volume_removed += r.removed;
+                if let Some(why) = why {
+                    report.notes.push(format!("interface {}: {why}. Used a finger joint ({} fingers) instead", ii + 1, r.fingers));
+                }
+                connectors.push(ConnectorRecord {
+                    id: format!("C{:02}", connectors.len() + 1),
+                    interface: ii,
+                    kind: ConnectorKind::Comb,
+                    position: iface.region.frame.to_3d(region.first().and_then(|p| p.outer.first().copied()).unwrap_or(DVec2::ZERO)),
+                    normal: iface.region.frame.n,
+                    male_piece: Some(iface.a),
+                    female_piece: iface.b,
+                    size: params.width,
+                    height: params.length,
+                    angle_deg: angle.to_degrees(),
+                });
+            }
+            Err(e) => report.skipped.push((
+                ii,
+                match why {
+                    Some(w) => format!("{w}; the finger joint failed too: {e}"),
+                    None => e,
+                },
+            )),
+        }
+    }
+    report.connectors = connectors.len();
     ctl.report(1.0, "Done");
     Ok(JointResult { pieces: out_pieces, loose, connectors, report })
 }
@@ -776,6 +842,7 @@ mod tests {
         let (r, ifs) = split(&block(Vec3::new(100.0, 100.0, 60.0)), vec![Plane::axis(2, 30.0)]);
         let mut s = ConnectorSettings::new(ConnectorKind::Pin);
         s.height = 45.0; // 30 mm of material behind the face
+        s.thin_wall = ThinWallPolicy::ShrinkToFit; // a finger joint would otherwise take over
         let res = generate_joints(&r.pieces, &ifs, &s, &Control::none()).unwrap();
         assert!(res.connectors.is_empty());
         assert_eq!(res.report.interfaces_connected, 0);
@@ -808,9 +875,21 @@ mod tests {
         // 3 mm wall: refused with an explanation, pieces untouched.
         let thin = openslicer_geom_test_shell(50.0, 47.0);
         let (r, ifs) = split(&thin, vec![Plane::axis(2, 0.0)]);
-        let res = generate_joints(&r.pieces, &ifs, &s, &Control::none()).unwrap();
+        let mut refuse = s.clone();
+        refuse.thin_wall = ThinWallPolicy::ShrinkToFit;
+        let res = generate_joints(&r.pieces, &ifs, &refuse, &Control::none()).unwrap();
         assert!(res.connectors.is_empty());
         assert!(res.report.skipped[0].1.contains("thick"), "{:?}", res.report.skipped);
+
+        // With the default policy the same 3 mm shell is joined by a finger joint instead, and says so.
+        let res = generate_joints(&r.pieces, &ifs, &s, &Control::none()).unwrap();
+        assert_all_valid(&res);
+        assert_eq!(res.connectors.len(), 1, "{:?}", res.report);
+        assert_eq!(res.connectors[0].kind, ConnectorKind::Comb);
+        assert_eq!(res.report.interfaces_connected, 1);
+        assert!(res.report.notes.iter().any(|n| n.contains("finger joint")), "{:?}", res.report.notes);
+        let overlap = boolean(&res.pieces[0].mesh, &res.pieces[1].mesh, BoolOp::Intersection).unwrap().0;
+        assert!(overlap.is_empty() || volume(&overlap) < 1e-3, "assembled pieces overlap");
         assert!(res.report.is_valid());
     }
 

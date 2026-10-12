@@ -4,6 +4,7 @@
 //! * [`placement`]: where connectors go on an interface
 
 pub mod apply;
+pub mod comb;
 pub mod placement;
 pub mod settings;
 pub mod shapes;

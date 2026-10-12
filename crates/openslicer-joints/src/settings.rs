@@ -22,10 +22,12 @@ pub enum ConnectorKind {
     Pyramid,
     /// Hook that is inserted and slid sideways to lock under a ledge.
     Claw,
+    /// Alternating fingers along the seam, cut out of the pieces themselves. Works in thin and curved walls.
+    Comb,
 }
 
 impl ConnectorKind {
-    pub const ALL: [ConnectorKind; 10] = [
+    pub const ALL: [ConnectorKind; 11] = [
         ConnectorKind::Pin,
         ConnectorKind::Dowel,
         ConnectorKind::Dovetail,
@@ -36,6 +38,7 @@ impl ConnectorKind {
         ConnectorKind::Terrace,
         ConnectorKind::Pyramid,
         ConnectorKind::Claw,
+        ConnectorKind::Comb,
     ];
 
     pub fn label(self) -> &'static str {
@@ -50,6 +53,7 @@ impl ConnectorKind {
             ConnectorKind::Terrace => "Terrace",
             ConnectorKind::Pyramid => "Pyramid",
             ConnectorKind::Claw => "Claw",
+            ConnectorKind::Comb => "Finger joint (thin walls)",
         }
     }
 
@@ -66,6 +70,7 @@ impl ConnectorKind {
             ConnectorKind::Terrace => "terrace",
             ConnectorKind::Pyramid => "pyramid",
             ConnectorKind::Claw => "claw",
+            ConnectorKind::Comb => "comb",
         }
     }
 
@@ -75,7 +80,7 @@ impl ConnectorKind {
 
     /// Placed at discrete points (as opposed to spanning the whole interface).
     pub fn is_point_based(self) -> bool {
-        !matches!(self, ConnectorKind::Lip | ConnectorKind::LapJoint | ConnectorKind::Terrace)
+        !matches!(self, ConnectorKind::Lip | ConnectorKind::LapJoint | ConnectorKind::Terrace | ConnectorKind::Comb)
     }
 }
 
@@ -94,13 +99,15 @@ pub enum ThinWallPolicy {
     ShrinkToFit,
     /// Never resize: report the interface as unconnectable.
     Skip,
+    /// Cut interlocking fingers out of the pieces themselves, which need no wall around them.
+    Comb,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ConnectorSettings {
     pub kind: ConnectorKind,
-    /// Main width/diameter in mm (pin diameter, tab width, dovetail width, puzzle head, pyramid base, claw width).
+    /// Main width/diameter in mm (pin diameter, tab width, dovetail width, puzzle head, pyramid base, claw width, finger width).
     pub size: f64,
     /// Protrusion of the male part / depth of the pockets, in mm (lap: step height; terrace: height per step; lip: ridge height).
     pub height: f64,
@@ -170,7 +177,7 @@ impl ConnectorSettings {
             min_feature: 1.5,
             angle: AngleMode::Auto,
             alternate: false,
-            thin_wall: ThinWallPolicy::ShrinkToFit,
+            thin_wall: ThinWallPolicy::Comb,
             segments: 32,
         };
         match kind {
@@ -184,6 +191,7 @@ impl ConnectorSettings {
             ConnectorKind::Terrace => Self { height: 2.0, ..base },
             ConnectorKind::Pyramid => Self { size: 10.0, height: 6.0, ..base },
             ConnectorKind::Claw => Self { size: 8.0, height: 8.0, ..base },
+            ConnectorKind::Comb => Self { size: 12.0, height: 8.0, ..base },
         }
     }
 

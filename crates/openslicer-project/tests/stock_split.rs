@@ -40,14 +40,36 @@ fn a_rotated_tiling_still_finds_every_interface() {
     assert!(out.connectors.len() >= out.interfaces.len() || !out.problems.is_empty());
 }
 
-/// Thin curved shells cannot take 6 mm pins; the pipeline must say so instead of reporting success.
+/// A 3-4 mm curved shell cannot take 6 mm pins, so every seam falls back to a finger joint. The whole assembly
+/// is checked for interpenetration.
 #[test]
-fn thin_shells_are_never_reported_clean_when_they_were_left_unconnected() {
-    for id in ["dome", "panel"] {
-        let out = run(id, &printer("Prusa MK4"), ConnectorKind::Pin);
+fn thin_curved_shells_are_joined_by_finger_joints() {
+    for (id, prefix) in [("dome", "Prusa MK4"), ("panel", "Prusa MK4"), ("panel", "Bambu Lab A1 mini")] {
+        let printer = printer(prefix);
+        let settings =
+            SplitSettings { connectors: Some(ConnectorSettings::new(ConnectorKind::Pin)), verify_assembly: true, ..Default::default() };
+        let out = run_split(&build(id).unwrap(), &printer, &settings, &Control::none()).unwrap();
         let report = out.joint_report.as_ref().expect("connectors were requested");
-        assert!(report.interfaces_connected < report.interfaces_total, "{id}: a 3-4 mm wall cannot hold a pin");
-        assert!(!out.problems.is_empty(), "{id}: unconnected interfaces must be reported as problems");
-        assert!(report.skipped.iter().all(|(_, why)| why.contains("thick")), "{id}: {:?}", report.skipped);
+        eprintln!(
+            "{id} on {prefix}: {} parts, {}/{} interfaces connected, problems {:?}",
+            out.pieces.len(),
+            report.interfaces_connected,
+            report.interfaces_total,
+            out.problems
+        );
+        assert!(out.fits.iter().all(|f| f.fits));
+        assert!(out.pieces.iter().all(|p| p.mesh.stats().is_watertight()), "{id}: every part must be closed");
+        assert_eq!(report.interfaces_connected, report.interfaces_total, "{id}: {:?}", report.skipped);
+        assert!(out.connectors.iter().all(|c| c.kind == ConnectorKind::Comb));
+        assert!(out.problems.is_empty(), "{id} on {prefix}: {:?}", out.problems);
+        // Material is only moved or removed as clearance: pieces add up to the source minus the clearance gaps.
+        let total: f64 = out.pieces.iter().map(|p| p.volume).sum();
+        let gaps = report.volume_removed - report.volume_added;
+        let expected = out.source.signed_volume - gaps;
+        assert!(
+            (total - expected).abs() < 2e-3 * out.source.signed_volume,
+            "{id}: parts total {total:.0} mm³, expected {expected:.0} (gaps {gaps:.0})"
+        );
+        assert!(gaps > 0.0 && gaps < 0.05 * out.source.signed_volume, "{id}: clearance gaps {gaps:.1} mm³");
     }
 }

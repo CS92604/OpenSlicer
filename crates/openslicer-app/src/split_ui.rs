@@ -101,7 +101,7 @@ impl SplitPanel {
             None => None,
             Some(kind) => {
                 let mut c = ConnectorSettings::new(kind);
-                c.size = self.conn_size;
+                c.size = if kind == ConnectorKind::Comb { self.conn_size.max(10.0) } else { self.conn_size };
                 c.height = self.conn_height;
                 c.clearance = self.clearance;
                 c.validate().map_err(|e| format!("connector settings: {e}"))?;

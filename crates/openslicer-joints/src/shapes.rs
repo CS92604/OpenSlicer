@@ -216,6 +216,9 @@ pub fn point_tools(s: &ConnectorSettings, exit: f64) -> Result<Tools, String> {
         ConnectorKind::Lip | ConnectorKind::LapJoint | ConnectorKind::Terrace => {
             return Err(format!("{} spans the whole interface; use region_tools", s.kind.label()));
         }
+        ConnectorKind::Comb => {
+            return Err("finger joints are cut from the pieces themselves; see the comb module".into());
+        }
     }
     if t.fit_pairs.is_empty() {
         if let (Some(m), Some(f)) = (&t.male, &t.female) {
@@ -339,7 +342,7 @@ fn half_plane(region: &[Polygon], angle: f64, offset: f64) -> Vec<Polygon> {
     vec![Polygon { outer: vec![base - p * big, base + d * big - p * big, base + d * big + p * big, base + p * big], holes: vec![] }]
 }
 
-fn strip_polygon(region: &[Polygon], angle: f64, a: f64, b: f64) -> Vec<Polygon> {
+pub fn strip_polygon(region: &[Polygon], angle: f64, a: f64, b: f64) -> Vec<Polygon> {
     let (lo, hi) = bounds(region);
     let big = (hi - lo).length() * 2.0 + 10.0;
     let (d, p) = (DVec2::new(angle.cos(), angle.sin()), DVec2::new(-angle.sin(), angle.cos()));
