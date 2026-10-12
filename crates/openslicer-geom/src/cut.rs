@@ -266,7 +266,7 @@ pub fn cut_plane(mesh: &Mesh, plane: &Plane, opts: &CutOptions) -> CutResult {
             Err(e) => report.problems.push(format!("cut face could not be built: {e}")),
             Ok(g) => {
                 section.polygons = polygons_from(&loops, &g, &pv_to_2d);
-                match triangulate_loops(&loops, &g, &section.polygons, &pv_to_2d, tol) {
+                match triangulate_loops(&loops, &g, &section.polygons, &pv_to_2d) {
                     Ok((tris, area)) => {
                         report.cap_area = area;
                         for t in tris {
@@ -438,77 +438,6 @@ pub(crate) fn chain_loops(edges: &[(u32, u32)], pos: &impl Fn(u32) -> DVec2) -> 
     (loops, open)
 }
 
-/// Collinear vertices removed from a ring, keyed by the kept edge they lie on.
-type ExtraPoints = FxHashMap<(u32, u32), Vec<u32>>;
-
-/// Splits a ring into its corner vertices and, for every kept edge, the vertices lying within `ctol` of it.
-/// Removing near-collinear vertices before triangulation keeps earcut from forming sliver triangles from them;
-/// they are re-inserted afterwards by fanning, so the cap still uses every boundary vertex.
-fn simplify_ring(ring: &[u32], pos: &impl Fn(u32) -> DVec2, ctol: f64) -> (Vec<u32>, ExtraPoints) {
-    let n = ring.len();
-    if n <= 3 {
-        return (ring.to_vec(), FxHashMap::default());
-    }
-    // Start from the lexicographically smallest point: an extreme point is always a true corner.
-    let start = (0..n)
-        .min_by(|&i, &j| {
-            let (a, b) = (pos(ring[i]), pos(ring[j]));
-            a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y))
-        })
-        .unwrap();
-    let at = |k: usize| ring[(start + k) % n];
-    let mut kept = vec![at(0)];
-    let mut extra: ExtraPoints = FxHashMap::default();
-    let mut anchor = 0usize; // index offset from `start`
-    while anchor < n {
-        // Longest run anchor..end whose interior points all lie within ctol of the chord and between its ends.
-        let mut end = anchor + 1;
-        let mut best = end;
-        while end <= n {
-            let (pa, pe) = (pos(at(anchor)), pos(at(end % n)));
-            let chord = pe - pa;
-            let len2 = chord.length_squared();
-            let ok = len2 > 0.0
-                && (anchor + 1..end).all(|m| {
-                    let q = pos(at(m)) - pa;
-                    let t = q.dot(chord) / len2;
-                    t > 0.0 && t < 1.0 && q.perp_dot(chord).abs() / len2.sqrt() <= ctol
-                });
-            if !ok {
-                break;
-            }
-            best = end;
-            end += 1;
-        }
-        let next = best;
-        if next > anchor + 1 {
-            extra.insert((at(anchor), at(next % n)), (anchor + 1..next).map(&at).collect());
-        }
-        if next < n {
-            kept.push(at(next));
-        }
-        anchor = next;
-    }
-    (kept, extra)
-}
-
-/// Re-inserts removed collinear vertices by fanning the triangle that owns each boundary edge.
-fn reinsert_collinear(tri: [u32; 3], extra: &ExtraPoints, out: &mut Vec<[u32; 3]>) {
-    for k in 0..3 {
-        let (u, v, w) = (tri[k], tri[(k + 1) % 3], tri[(k + 2) % 3]);
-        if let Some(points) = extra.get(&(u, v)) {
-            let mut chain = vec![u];
-            chain.extend(points);
-            chain.push(v);
-            for pair in chain.windows(2) {
-                reinsert_collinear([pair[0], pair[1], w], extra, out);
-            }
-            return;
-        }
-    }
-    out.push(tri);
-}
-
 /// Loops grouped into polygons: each outer loop with the holes it encloses (indices into the loop list).
 pub(crate) struct Grouping {
     pub outers: Vec<usize>,
@@ -560,45 +489,94 @@ pub(crate) fn polygons_from(loops: &[Vec<u32>], g: &Grouping, pos: &impl Fn(u32)
         .collect()
 }
 
-/// Triangulates grouped loops into cap triangles over the existing vertex ids.
+/// Triangulates grouped loops into cap triangles over the existing vertex ids, using a constrained Delaunay
+/// triangulation with exact predicates. Unlike ear clipping it cannot produce zero-area triangles, even when
+/// many boundary points are collinear (flat walls, heightfield edges). Boundary vertices are never moved or
+/// added, so the cap stays watertight against the walls.
 fn triangulate_loops(
     loops: &[Vec<u32>],
     g: &Grouping,
     polys: &[Polygon],
     pos: &impl Fn(u32) -> DVec2,
-    ctol: f64,
 ) -> Result<(Vec<[u32; 3]>, f64), String> {
+    use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
     let mut tris = Vec::new();
     let mut total = 0.0;
     for (oi, &o) in g.outers.iter().enumerate() {
-        let mut extra: ExtraPoints = FxHashMap::default();
-        let (outer_ids, e) = simplify_ring(&loops[o], pos, ctol);
-        extra.extend(e);
-        let mut ids: Vec<u32> = outer_ids;
-        let mut flat: Vec<f64> = ids.iter().flat_map(|&v| [pos(v).x, pos(v).y]).collect();
-        let mut hole_starts = Vec::new();
-        for &h in &g.holes_of[oi] {
-            let (hole_ids, e) = simplify_ring(&loops[h], pos, ctol);
-            extra.extend(e);
-            hole_starts.push(ids.len());
-            for &v in &hole_ids {
-                flat.extend([pos(v).x, pos(v).y]);
-                ids.push(v);
+        let mut rings: Vec<&Vec<u32>> = vec![&loops[o]];
+        rings.extend(g.holes_of[oi].iter().map(|&h| &loops[h]));
+        let mut cdt: ConstrainedDelaunayTriangulation<Point2<f64>> = ConstrainedDelaunayTriangulation::new();
+        let mut handle_of: FxHashMap<u32, spade::handles::FixedVertexHandle> = FxHashMap::default();
+        // First vertex id seen at each handle (vertices at identical positions share a handle; the output weld merges the rest).
+        let mut id_of: Vec<u32> = Vec::new();
+        for ring in &rings {
+            for &v in ring.iter() {
+                if handle_of.contains_key(&v) {
+                    continue;
+                }
+                let p = pos(v);
+                let h = cdt.insert(Point2::new(p.x, p.y)).map_err(|e| format!("triangulation input rejected: {e:?}"))?;
+                if h.index() == id_of.len() {
+                    id_of.push(v);
+                }
+                handle_of.insert(v, h);
             }
         }
-        let idx = earcutr::earcut(&flat, &hole_starts, 2).map_err(|e| format!("earcut failed: {e:?}"))?;
-        let poly_area = polys[oi].area();
+        for ring in &rings {
+            let n = ring.len();
+            for i in 0..n {
+                let (ha, hb) = (handle_of[&ring[i]], handle_of[&ring[(i + 1) % n]]);
+                if ha == hb {
+                    continue;
+                }
+                if !cdt.can_add_constraint(ha, hb) {
+                    return Err("the cut outline crosses itself".into());
+                }
+                cdt.add_constraint(ha, hb);
+            }
+        }
+        let poly = &polys[oi];
+        // Classify faces purely topologically: start outside, and every constraint edge crossed toggles
+        // inside/outside (even-odd). No geometric inside tests, so near-collinear boundary points cannot confuse it.
+        let mut depth: Vec<u32> = vec![u32::MAX; cdt.num_all_faces()];
+        let mut queue = std::collections::VecDeque::new();
+        for face in cdt.inner_faces() {
+            for e in face.adjacent_edges() {
+                if e.rev().face().as_inner().is_none() {
+                    let d = u32::from(e.is_constraint_edge());
+                    let slot = &mut depth[face.fix().index()];
+                    if *slot == u32::MAX || d < *slot {
+                        *slot = d;
+                        queue.push_back(face.fix());
+                    }
+                }
+            }
+        }
+        while let Some(f) = queue.pop_front() {
+            let d = depth[f.index()];
+            for e in cdt.face(f).adjacent_edges() {
+                if let Some(n) = e.rev().face().as_inner() {
+                    let nd = d + u32::from(e.is_constraint_edge());
+                    let slot = &mut depth[n.fix().index()];
+                    if *slot == u32::MAX {
+                        *slot = nd;
+                        queue.push_back(n.fix());
+                    }
+                }
+            }
+        }
         let mut tri_area = 0.0;
-        let first = tris.len();
-        for t in idx.chunks_exact(3) {
-            let (a, b, c) = (ids[t[0]], ids[t[1]], ids[t[2]]);
-            let signed = (pos(b) - pos(a)).perp_dot(pos(c) - pos(a)) * 0.5;
-            let tri = if signed >= 0.0 { [a, b, c] } else { [a, c, b] };
-            reinsert_collinear(tri, &extra, &mut tris);
+        for face in cdt.inner_faces() {
+            if depth[face.fix().index()] % 2 == 0 {
+                continue;
+            }
+            let ids = face.vertices().map(|v| id_of[v.fix().index()]);
+            let (a, b, c) = (pos(ids[0]), pos(ids[1]), pos(ids[2]));
+            let signed = (b - a).perp_dot(c - a) * 0.5;
+            tri_area += signed.abs();
+            tris.push(if signed >= 0.0 { [ids[0], ids[1], ids[2]] } else { [ids[0], ids[2], ids[1]] });
         }
-        for t in &tris[first..] {
-            tri_area += ((pos(t[1]) - pos(t[0])).perp_dot(pos(t[2]) - pos(t[0])) * 0.5).abs();
-        }
+        let poly_area = poly.area();
         total += tri_area;
         if (tri_area - poly_area).abs() > 1e-7 * poly_area.abs().max(1e-9) {
             return Err(format!("triangulated area {tri_area:.9} differs from region area {poly_area:.9}"));

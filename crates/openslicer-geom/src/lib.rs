@@ -7,12 +7,15 @@
 
 pub mod boolean;
 pub mod build;
+pub mod bvh;
 pub mod components;
 pub mod crop;
 pub mod cut;
+pub mod hollow;
 pub mod plane;
 pub mod poly2d;
 pub mod region;
+pub mod repair;
 pub mod section;
 
 #[cfg(test)]

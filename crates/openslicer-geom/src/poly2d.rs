@@ -81,6 +81,13 @@ pub fn difference(a: &[Polygon], b: &[Polygon]) -> Vec<Polygon> {
     overlay(a, b, OverlayRule::Difference)
 }
 
+/// Union of all polygons in `polys` (merging any that overlap or touch).
+pub fn union_all(polys: &[Polygon]) -> Vec<Polygon> {
+    let subject = to_contours(polys);
+    let empty: Contours = Vec::new();
+    from_shapes(subject.overlay(&empty, OverlayRule::Union, FillRule::NonZero))
+}
+
 pub fn area(polys: &[Polygon]) -> f64 {
     polys.iter().map(Polygon::area).sum()
 }
@@ -132,6 +139,15 @@ mod tests {
         assert!((area(&intersect(&a, &b)) - 25.0).abs() < 1e-6);
         assert!((area(&union(&a, &b)) - 175.0).abs() < 1e-6);
         assert!((area(&difference(&a, &b)) - 75.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn union_all_merges_overlapping_and_touching_polygons() {
+        let tiles = [square(0.0, 0.0, 10.0), square(10.0, 0.0, 10.0), square(5.0, 5.0, 10.0)];
+        let u = union_all(&tiles);
+        assert_eq!(u.len(), 1);
+        assert!((area(&u) - (100.0 + 100.0 + 100.0 - 25.0 - 25.0)).abs() < 1e-6);
+        assert!(union_all(&[]).is_empty());
     }
 
     #[test]

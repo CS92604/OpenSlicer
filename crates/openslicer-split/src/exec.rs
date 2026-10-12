@@ -200,19 +200,35 @@ fn record_len(replaced: &[Option<Vec<Piece>>]) -> usize {
     replaced.iter().flatten().map(Vec::len).sum()
 }
 
-/// Assigns stable ids ordered bottom-to-top, then front-to-back, then left-to-right.
-pub fn number_pieces(pieces: &mut [Piece]) {
+/// The order in which pieces are numbered: bottom-to-top, then front-to-back, then left-to-right
+/// (positions are bucketed so tiny differences do not reorder pieces). Returns indices into `pieces`.
+pub fn numbering_order(pieces: &[Piece]) -> Vec<usize> {
     let diag = pieces.iter().map(|p| p.bounds.size().length()).fold(0.0f32, f32::max).max(1.0) as f64;
     let bucket = (diag * 1e-3).max(1e-3);
     let key = |p: &Piece| {
         let c = p.bounds.center().as_dvec3();
         ((c.z / bucket).round() as i64, (c.y / bucket).round() as i64, (c.x / bucket).round() as i64)
     };
-    pieces.sort_by_key(|p| key(p));
-    let width = pieces.len().to_string().len().max(2);
-    for (i, p) in pieces.iter_mut().enumerate() {
+    let mut order: Vec<usize> = (0..pieces.len()).collect();
+    order.sort_by_key(|&i| key(&pieces[i]));
+    order
+}
+
+/// Name for the `index`-th (0-based) of `count` pieces: `P01`, `P02`, ... with enough digits for `count`.
+pub fn piece_name(index: usize, count: usize) -> String {
+    let width = count.to_string().len().max(2);
+    format!("P{:0width$}", index + 1)
+}
+
+/// Assigns stable ids and names in [`numbering_order`], reordering `pieces` accordingly.
+pub fn number_pieces(pieces: &mut [Piece]) {
+    let order = numbering_order(pieces);
+    let sorted: Vec<Piece> = order.iter().map(|&i| pieces[i].clone()).collect();
+    let count = sorted.len();
+    for (i, (slot, mut p)) in pieces.iter_mut().zip(sorted).enumerate() {
         p.id = i + 1;
-        p.name = format!("P{:0width$}", i + 1);
+        p.name = piece_name(i, count);
+        *slot = p;
     }
 }
 

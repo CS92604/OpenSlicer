@@ -197,6 +197,199 @@ pub fn cuboid(min: DVec3, max: DVec3) -> Mesh {
     extrude(&[crate::poly2d::rect(DVec2::new(min.x, min.y), DVec2::new(max.x, max.y))], min.z, max.z)
 }
 
+/// Solid under a height field. `heights` holds `nx * ny` samples (row-major, x fastest) at spacing `dx`, `dy`
+/// starting at the origin; the solid extends from `floor` up to each height. Heights must exceed `floor`.
+/// The top surface is triangulated with alternating diagonals, the walls follow the border, and the bottom is a
+/// fan from its centre, so the mesh is watertight with outward normals.
+pub fn heightfield(heights: &[f32], nx: usize, ny: usize, dx: f64, dy: f64, floor: f64) -> Result<Mesh, String> {
+    if nx < 2 || ny < 2 || heights.len() != nx * ny {
+        return Err("a height field needs at least 2 x 2 samples".into());
+    }
+    if heights.iter().any(|h| !h.is_finite() || (*h as f64) <= floor) {
+        return Err("every height must be finite and above the floor".into());
+    }
+    let mut verts: Vec<Vec3> = Vec::with_capacity(nx * ny + 2 * (nx + ny));
+    for j in 0..ny {
+        for i in 0..nx {
+            verts.push(Vec3::new((i as f64 * dx) as f32, (j as f64 * dy) as f32, heights[j * nx + i]));
+        }
+    }
+    let top = |i: usize, j: usize| (j * nx + i) as u32;
+    let mut tris: Vec<[u32; 3]> = Vec::with_capacity(nx * ny * 2);
+    for j in 0..ny - 1 {
+        for i in 0..nx - 1 {
+            let (a, b, c, d) = (top(i, j), top(i + 1, j), top(i + 1, j + 1), top(i, j + 1));
+            if (i + j) % 2 == 0 {
+                tris.push([a, b, c]);
+                tris.push([a, c, d]);
+            } else {
+                tris.push([a, b, d]);
+                tris.push([b, c, d]);
+            }
+        }
+    }
+    // Border walks (counter-clockwise seen from above): bottom row, right column, top row reversed, left column reversed.
+    let mut border: Vec<(usize, usize)> = Vec::new();
+    border.extend((0..nx - 1).map(|i| (i, 0)));
+    border.extend((0..ny - 1).map(|j| (nx - 1, j)));
+    border.extend((1..nx).rev().map(|i| (i, ny - 1)));
+    border.extend((1..ny).rev().map(|j| (0, j)));
+    let base = verts.len() as u32;
+    for &(i, j) in &border {
+        verts.push(Vec3::new((i as f64 * dx) as f32, (j as f64 * dy) as f32, floor as f32));
+    }
+    let n = border.len() as u32;
+    for k in 0..n {
+        let k2 = (k + 1) % n;
+        let (ta, tb) = (top(border[k as usize].0, border[k as usize].1), top(border[k2 as usize].0, border[k2 as usize].1));
+        tris.push([base + k, base + k2, tb]);
+        tris.push([base + k, tb, ta]);
+    }
+    let centre = verts.len() as u32;
+    verts.push(Vec3::new((((nx - 1) as f64) * dx * 0.5) as f32, (((ny - 1) as f64) * dy * 0.5) as f32, floor as f32));
+    for k in 0..n {
+        tris.push([centre, base + (k + 1) % n, base + k]); // faces down
+    }
+    Ok(Mesh::new(verts, tris))
+}
+
+/// Replaces sharp corners of a polyline with circular fillets of (at most) `radius`, so a tube swept along it
+/// cannot pinch. Gentle turns (under 10 degrees, as on finely sampled curves) are kept as they are.
+fn fillet_path(pts: &[DVec3], radius: f64, closed: bool) -> Vec<DVec3> {
+    let n = pts.len();
+    let mut out: Vec<DVec3> = Vec::with_capacity(n * 4);
+    let range: Vec<usize> = if closed { (0..n).collect() } else { (1..n - 1).collect() };
+    if !closed {
+        out.push(pts[0]);
+    }
+    for i in if closed { 0..n } else { 1..n - 1 } {
+        let (p, c, q) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+        let (d0, d1) = ((c - p).normalize(), (q - c).normalize());
+        let turn = d0.dot(d1).clamp(-1.0, 1.0).acos();
+        if turn < 10f64.to_radians() || turn > std::f64::consts::PI - 1e-3 {
+            out.push(c);
+            continue;
+        }
+        // Tangent length for a fillet of this radius, limited so neighbouring fillets do not overlap.
+        let limit = 0.45 * (c - p).length().min((q - c).length());
+        let t = (radius * (turn / 2.0).tan()).min(limit);
+        let r = t / (turn / 2.0).tan();
+        let (a, b) = (c - d0 * t, c + d1 * t);
+        let centre = a + (d1 - d0 * d0.dot(d1)).normalize() * r;
+        let steps = ((turn / 10f64.to_radians()).ceil() as usize).max(2);
+        let (va, vb) = ((a - centre).normalize(), (b - centre).normalize());
+        let axis = va.cross(vb);
+        let angle = va.dot(vb).clamp(-1.0, 1.0).acos();
+        for k in 0..=steps {
+            let f = angle * k as f64 / steps as f64;
+            let rot = va * f.cos() + axis.cross(va).normalize_or_zero() * f.sin();
+            out.push(centre + rot * r);
+        }
+    }
+    if !closed {
+        out.push(pts[n - 1]);
+    }
+    let _ = range;
+    out
+}
+
+/// Tube of the given radius swept along a polyline, with flat end caps (or closed into a loop).
+/// Sharp corners are rounded with fillets of about three tube radii (less where segments are short).
+pub fn tube(path: &[DVec3], radius: f64, segments: usize, closed: bool) -> Result<Mesh, String> {
+    let mut pts: Vec<DVec3> = Vec::with_capacity(path.len());
+    for &p in path {
+        if pts.last().is_none_or(|q| (*q - p).length() > 1e-6) {
+            pts.push(p);
+        }
+    }
+    if closed && pts.len() > 1 && (pts[0] - pts[pts.len() - 1]).length() <= 1e-6 {
+        pts.pop();
+    }
+    if pts.len() < 2 || (closed && pts.len() < 3) || segments < 3 || radius <= 0.0 {
+        return Err("a tube needs at least two path points, three segments and a positive radius".into());
+    }
+    let pts = fillet_path(&pts, radius * 3.0, closed);
+    let n = pts.len();
+    let dir = |i: usize| -> DVec3 { (pts[(i + 1) % n] - pts[i]).normalize() };
+    let tangents: Vec<DVec3> = (0..n)
+        .map(|i| {
+            if closed {
+                (dir((i + n - 1) % n) + dir(i)).try_normalize().unwrap_or(dir(i))
+            } else if i == 0 {
+                dir(0)
+            } else if i == n - 1 {
+                dir(n - 2)
+            } else {
+                (dir(i - 1) + dir(i)).try_normalize().unwrap_or(dir(i))
+            }
+        })
+        .collect();
+    // Parallel transport of a reference normal along the path.
+    let mut nrm = {
+        let helper = if tangents[0].z.abs() < 0.9 { DVec3::Z } else { DVec3::X };
+        tangents[0].cross(helper).normalize()
+    };
+    let mut normals = Vec::with_capacity(n);
+    for t in &tangents {
+        nrm = (nrm - *t * nrm.dot(*t)).try_normalize().unwrap_or(nrm);
+        normals.push(nrm);
+    }
+    let ring = |i: usize| -> Vec<DVec3> {
+        let (t, a) = (tangents[i], normals[i]);
+        let b = t.cross(a);
+        (0..segments)
+            .map(|k| {
+                let ang = std::f64::consts::TAU * k as f64 / segments as f64;
+                pts[i] + (a * ang.cos() + b * ang.sin()) * radius
+            })
+            .collect()
+    };
+    let rings: Vec<Vec<DVec3>> = (0..n).map(ring).collect();
+    // A closed tube must join its last ring to its first; a twisted transported frame needs the best rotation.
+    let mut closing_shift = 0usize;
+    if closed {
+        let (last, first) = (&rings[n - 1], &rings[0]);
+        closing_shift = (0..segments)
+            .min_by(|&s1, &s2| {
+                let cost = |s: usize| (0..segments).map(|k| (last[k] - first[(k + s) % segments]).length_squared()).sum::<f64>();
+                cost(s1).total_cmp(&cost(s2))
+            })
+            .unwrap();
+    }
+    let mut verts: Vec<Vec3> = rings.iter().flatten().map(|p| p.as_vec3()).collect();
+    let id = |ring: usize, k: usize| (ring * segments + k % segments) as u32;
+    let mut tris = Vec::new();
+    let spans = if closed { n } else { n - 1 };
+    for i in 0..spans {
+        let j = (i + 1) % n;
+        let wrap = closed && j == 0;
+        for k in 0..segments {
+            let (a, b) = (id(i, k), id(i, k + 1));
+            let (c, d) = if wrap { (id(0, k + closing_shift + 1), id(0, k + closing_shift)) } else { (id(j, k + 1), id(j, k)) };
+            tris.push([a, b, c]);
+            tris.push([a, c, d]);
+        }
+    }
+    if !closed {
+        let c0 = verts.len() as u32;
+        verts.push(pts[0].as_vec3());
+        let c1 = verts.len() as u32;
+        verts.push(pts[n - 1].as_vec3());
+        for k in 0..segments {
+            tris.push([c0, id(0, k + 1), id(0, k)]);
+            tris.push([c1, id(n - 1, k), id(n - 1, k + 1)]);
+        }
+    }
+    let mut m = Mesh::new(verts, tris);
+    // Orient outward: the winding depends on the path's handedness.
+    if m.stats().signed_volume < 0.0 {
+        for t in &mut m.triangles {
+            t.swap(1, 2);
+        }
+    }
+    Ok(m)
+}
+
 /// A local right-handed frame used to place shapes built around the origin into the world.
 #[derive(Clone, Copy, Debug)]
 pub struct LocalFrame {
@@ -239,7 +432,7 @@ pub fn merge(meshes: &[Mesh]) -> Mesh {
 mod tests {
     use super::*;
     use crate::poly2d::{circle, difference, rect};
-    use std::f64::consts::PI;
+    use std::f64::consts::{PI, TAU};
 
     fn check(m: &Mesh, expected_volume: f64, rel: f64) {
         let s = m.stats();
@@ -299,6 +492,62 @@ mod tests {
         assert!(plane.signed_distance(f.origin).abs() < 1e-9);
         assert!((f.z - plane.n).length() < 1e-12);
         assert!((f.x.cross(f.y) - f.z).length() < 1e-12);
+    }
+
+    #[test]
+    fn heightfield_solid_is_watertight_with_the_right_volume() {
+        // 5 x 4 samples, spacing 2 mm: footprint 8 x 6 mm, flat 3 mm high over a floor at 0 -> 144 mm3.
+        let flat = heightfield(&[3.0; 20], 5, 4, 2.0, 2.0, 0.0).unwrap();
+        check(&flat, 8.0 * 6.0 * 3.0, 1e-9);
+        // A linear ramp in x (heights 1..5 over 4 intervals): mean height 3.
+        let ramp: Vec<f32> = (0..4).flat_map(|_| (0..5).map(|i| 1.0 + i as f32)).collect();
+        let m = heightfield(&ramp, 5, 4, 2.0, 2.0, 0.0).unwrap();
+        check(&m, 8.0 * 6.0 * 3.0, 1e-6);
+        assert!(heightfield(&[0.0; 20], 5, 4, 2.0, 2.0, 0.0).is_err(), "heights at the floor are rejected");
+        assert!(heightfield(&[1.0; 3], 5, 4, 2.0, 2.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn heightfield_with_noise_stays_a_valid_solid() {
+        let mut rng = 12345u64;
+        let h: Vec<f32> = (0..40 * 30)
+            .map(|_| {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                1.0 + ((rng >> 40) as f32 / 16777216.0) * 4.0
+            })
+            .collect();
+        let m = heightfield(&h, 40, 30, 0.5, 0.5, 0.0).unwrap();
+        let s = m.stats();
+        assert!(s.is_watertight() && s.signed_volume > 0.0, "{s:?}");
+    }
+
+    #[test]
+    fn straight_tube_has_the_cylinder_volume() {
+        let t = tube(&[DVec3::ZERO, DVec3::new(0.0, 0.0, 20.0)], 2.0, 64, false).unwrap();
+        check(&t, PI * 4.0 * 20.0, 2e-3);
+    }
+
+    #[test]
+    fn bent_and_closed_tubes_are_valid_solids() {
+        let bent =
+            tube(&[DVec3::ZERO, DVec3::new(10.0, 0.0, 0.0), DVec3::new(10.0, 10.0, 0.0), DVec3::new(10.0, 10.0, 10.0)], 1.0, 24, false)
+                .unwrap();
+        let s = bent.stats();
+        assert!(s.is_watertight() && s.signed_volume > 0.0, "{s:?}");
+        // A closed square loop.
+        let sq = [DVec3::new(0.0, 0.0, 0.0), DVec3::new(20.0, 0.0, 0.0), DVec3::new(20.0, 20.0, 0.0), DVec3::new(0.0, 20.0, 0.0)];
+        let ring = tube(&sq, 1.0, 24, true).unwrap();
+        let s = ring.stats();
+        assert!(s.is_watertight() && s.signed_volume > 0.0, "{s:?}");
+        // Volume ~ cross-section area times centreline length: rounded corners shorten the path slightly.
+        assert!(s.signed_volume > PI * 70.0 && s.signed_volume < PI * 80.0, "{}", s.signed_volume);
+        // A circular loop.
+        let circle: Vec<DVec3> =
+            (0..64).map(|k| DVec3::new(30.0 * (TAU * k as f64 / 64.0).cos(), 30.0 * (TAU * k as f64 / 64.0).sin(), 5.0)).collect();
+        let ring = tube(&circle, 1.5, 16, true).unwrap();
+        let s = ring.stats();
+        assert!(s.is_watertight() && s.signed_volume > 0.0, "{s:?}");
+        assert!(tube(&[DVec3::ZERO], 1.0, 8, false).is_err());
     }
 
     #[test]

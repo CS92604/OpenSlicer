@@ -59,8 +59,28 @@ pub fn tri_box_overlap(c: DVec3, h: DVec3, tri: [DVec3; 3]) -> bool {
     true
 }
 
+/// Per-cell classification of a grid against a mesh.
+pub struct Occupancy {
+    /// The surface passes through the cell.
+    pub surface: Vec<bool>,
+    /// The cell centre lies inside the solid.
+    pub centre_inside: Vec<bool>,
+}
+
+impl Occupancy {
+    /// Cells that contain any material: touched by the surface or with the centre inside.
+    pub fn any_material(&self) -> Vec<bool> {
+        self.surface.iter().zip(&self.centre_inside).map(|(a, b)| *a || *b).collect()
+    }
+}
+
 /// Occupancy of `grid` (cells in frame coordinates) for `mesh`. Returns one flag per cell, indexed by [`Grid::index`].
 pub fn occupancy(mesh: &Mesh, frame: &GridFrame, grid: &Grid) -> Vec<bool> {
+    occupancy_detail(mesh, frame, grid).any_material()
+}
+
+/// Like [`occupancy`], but keeps the surface and centre-inside classifications apart.
+pub fn occupancy_detail(mesh: &Mesh, frame: &GridFrame, grid: &Grid) -> Occupancy {
     let axes = frame.axes();
     let to_grid = |p: DVec3| -> DVec3 {
         DVec3::new(p.dot(axes[0]) - grid.origin[0], p.dot(axes[1]) - grid.origin[1], p.dot(axes[2]) - grid.origin[2])
@@ -147,7 +167,7 @@ pub fn occupancy(mesh: &Mesh, frame: &GridFrame, grid: &Grid) -> Vec<bool> {
             }
         }
     }
-    let mut occupied = surface;
+    let mut inside = vec![false; ncell];
     for j in 0..n[1] {
         for k in 0..n[2] {
             let col = &mut hits[j * n[2] + k];
@@ -159,12 +179,12 @@ pub fn occupancy(mesh: &Mesh, frame: &GridFrame, grid: &Grid) -> Vec<bool> {
                     crossed += 1;
                 }
                 if crossed % 2 == 1 {
-                    occupied[grid.index(i, j, k)] = true;
+                    inside[grid.index(i, j, k)] = true;
                 }
             }
         }
     }
-    occupied
+    Occupancy { surface, centre_inside: inside }
 }
 
 #[cfg(test)]

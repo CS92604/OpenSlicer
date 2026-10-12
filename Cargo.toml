@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/openslicer-core", "crates/openslicer-io", "crates/openslicer-geom", "crates/openslicer-split", "crates/openslicer-joints", "crates/openslicer-app"]
+members = ["crates/openslicer-core", "crates/openslicer-io", "crates/openslicer-geom", "crates/openslicer-split", "crates/openslicer-joints", "crates/openslicer-fab", "crates/openslicer-app"]
 
 [workspace.package]
 version = "0.0.1"
@@ -19,8 +19,11 @@ openslicer-io = { path = "crates/openslicer-io" }
 openslicer-geom = { path = "crates/openslicer-geom" }
 openslicer-split = { path = "crates/openslicer-split" }
 openslicer-joints = { path = "crates/openslicer-joints" }
+openslicer-fab = { path = "crates/openslicer-fab" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 rustc-hash = "2"
 earcutr = "0.5"
+spade = "2"
 boolmesh = { version = "0.2.1", features = ["rayon"] }
 i_overlay = "9"
 rayon = "1"

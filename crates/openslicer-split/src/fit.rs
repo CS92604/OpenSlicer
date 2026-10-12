@@ -103,7 +103,7 @@ fn search(mesh: &Mesh, usable: DVec3, preferred_down: &[DVec3], respect_preferen
         }
     }
 
-    let mut best: Option<(Orientation, (u8, f64))> = None;
+    let mut best: Option<(Orientation, (u8, f64, f64))> = None;
     for (up, preferred) in ups {
         let (e1, e2) = basis_for(up);
         let (mut zmin, mut zmax) = (f64::MAX, f64::MIN);
@@ -142,8 +142,12 @@ fn search(mesh: &Mesh, usable: DVec3, preferred_down: &[DVec3], respect_preferen
                 let rotation = DMat3::from_cols(DVec3::new(a.x, b.x, up.x), DVec3::new(a.y, b.y, up.y), DVec3::new(a.z, b.z, up.z));
                 // Rows (a, b, up): print x = a·p, y = b·p, z = up·p.
                 let volume = size.x * size.y * size.z;
-                let key = (if preferred && respect_preference { 0u8 } else { 1u8 }, volume);
-                if best.as_ref().is_none_or(|(_, k)| key.0 < k.0 || (key.0 == k.0 && key.1 < k.1 - 1e-9)) {
+                let key = (if preferred && respect_preference { 0u8 } else { 1u8 }, volume, height);
+                // Prefer preferred faces, then the smallest bounding box; among equal boxes the lowest print height (parts lie flat).
+                let better = |k: &(u8, f64, f64)| {
+                    key.0 < k.0 || (key.0 == k.0 && (key.1 < k.1 * (1.0 - 1e-9) || (key.1 <= k.1 * (1.0 + 1e-9) && key.2 < k.2 - 1e-9)))
+                };
+                if best.as_ref().is_none_or(|(_, k)| better(k)) {
                     best = Some((Orientation { rotation, size, up, preferred }, key));
                 }
             }

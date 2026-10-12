@@ -12,6 +12,7 @@ openslicer-core.workspace = true
 glam.workspace = true
 rustc-hash.workspace = true
 earcutr.workspace = true
+spade.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 i_overlay.workspace = true

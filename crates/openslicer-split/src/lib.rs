@@ -11,6 +11,7 @@ pub mod exec;
 pub mod fit;
 pub mod interfaces;
 pub mod layout;
+pub mod nest;
 pub mod occupancy;
 pub mod plan;
 pub mod reduce;
