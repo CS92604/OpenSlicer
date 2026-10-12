@@ -266,7 +266,7 @@ pub fn cut_plane(mesh: &Mesh, plane: &Plane, opts: &CutOptions) -> CutResult {
             Err(e) => report.problems.push(format!("cut face could not be built: {e}")),
             Ok(g) => {
                 section.polygons = polygons_from(&loops, &g, &pv_to_2d);
-                match triangulate_loops(&loops, &g, &section.polygons, &pv_to_2d) {
+                match triangulate_loops(&loops, &g, &section.polygons, &pv_to_2d, tol) {
                     Ok((tris, area)) => {
                         report.cap_area = area;
                         for t in tris {
@@ -285,8 +285,39 @@ pub fn cut_plane(mesh: &Mesh, plane: &Plane, opts: &CutOptions) -> CutResult {
         }
     }
 
-    let result = CutResult { above: Mesh::new(above.verts, above.tris), below: Mesh::new(below.verts, below.tris), section, report };
+    let result = CutResult {
+        above: weld_coincident(Mesh::new(above.verts, above.tris)),
+        below: weld_coincident(Mesh::new(below.verts, below.tris)),
+        section,
+        report,
+    };
     finish(result, opts)
+}
+
+/// Merges output vertices that landed on exactly the same position (two crossing points of a sliver input
+/// triangle can round to the same f32 point) and drops the zero-area triangles that result.
+fn weld_coincident(mesh: Mesh) -> Mesh {
+    let mut seen: FxHashMap<[u32; 3], u32> = FxHashMap::default();
+    let mut remap: Vec<u32> = Vec::with_capacity(mesh.vertices.len());
+    let mut keep: Vec<Vec3> = Vec::with_capacity(mesh.vertices.len());
+    for v in &mesh.vertices {
+        let key = [(v.x + 0.0).to_bits(), (v.y + 0.0).to_bits(), (v.z + 0.0).to_bits()];
+        let id = *seen.entry(key).or_insert_with(|| {
+            keep.push(*v);
+            (keep.len() - 1) as u32
+        });
+        remap.push(id);
+    }
+    if keep.len() == mesh.vertices.len() {
+        return mesh;
+    }
+    let tris = mesh
+        .triangles
+        .iter()
+        .map(|t| [remap[t[0] as usize], remap[t[1] as usize], remap[t[2] as usize]])
+        .filter(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2])
+        .collect();
+    Mesh::new(keep, tris)
 }
 
 fn finish(mut r: CutResult, opts: &CutOptions) -> CutResult {
@@ -410,40 +441,53 @@ pub(crate) fn chain_loops(edges: &[(u32, u32)], pos: &impl Fn(u32) -> DVec2) -> 
 /// Collinear vertices removed from a ring, keyed by the kept edge they lie on.
 type ExtraPoints = FxHashMap<(u32, u32), Vec<u32>>;
 
-/// Splits a ring into its corner vertices and, for every kept edge, the exactly-collinear vertices lying on it.
-/// Removing those vertices before triangulation avoids zero-area triangles; they are re-inserted afterwards.
-fn simplify_ring(ring: &[u32], pos: &impl Fn(u32) -> DVec2) -> (Vec<u32>, ExtraPoints) {
+/// Splits a ring into its corner vertices and, for every kept edge, the vertices lying within `ctol` of it.
+/// Removing near-collinear vertices before triangulation keeps earcut from forming sliver triangles from them;
+/// they are re-inserted afterwards by fanning, so the cap still uses every boundary vertex.
+fn simplify_ring(ring: &[u32], pos: &impl Fn(u32) -> DVec2, ctol: f64) -> (Vec<u32>, ExtraPoints) {
     let n = ring.len();
-    let removable: Vec<bool> = (0..n)
-        .map(|i| {
-            let (p, c, q) = (pos(ring[(i + n - 1) % n]), pos(ring[i]), pos(ring[(i + 1) % n]));
-            let (a, b) = (c - p, q - c);
-            let scale = a.length() * b.length();
-            scale > 0.0 && a.perp_dot(b).abs() <= 1e-9 * scale && a.dot(b) > 0.0
-        })
-        .collect();
-    if removable.iter().all(|&r| r) {
+    if n <= 3 {
         return (ring.to_vec(), FxHashMap::default());
     }
-    let start = removable.iter().position(|&r| !r).unwrap();
-    let mut kept: Vec<u32> = Vec::new();
+    // Start from the lexicographically smallest point: an extreme point is always a true corner.
+    let start = (0..n)
+        .min_by(|&i, &j| {
+            let (a, b) = (pos(ring[i]), pos(ring[j]));
+            a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y))
+        })
+        .unwrap();
+    let at = |k: usize| ring[(start + k) % n];
+    let mut kept = vec![at(0)];
     let mut extra: ExtraPoints = FxHashMap::default();
-    let mut pending: Vec<u32> = Vec::new();
-    let mut anchor = ring[start];
-    kept.push(anchor);
-    for k in 1..=n {
-        let v = ring[(start + k) % n];
-        if removable[(start + k) % n] && k < n {
-            pending.push(v);
-        } else {
-            if !pending.is_empty() {
-                extra.insert((anchor, v), std::mem::take(&mut pending));
+    let mut anchor = 0usize; // index offset from `start`
+    while anchor < n {
+        // Longest run anchor..end whose interior points all lie within ctol of the chord and between its ends.
+        let mut end = anchor + 1;
+        let mut best = end;
+        while end <= n {
+            let (pa, pe) = (pos(at(anchor)), pos(at(end % n)));
+            let chord = pe - pa;
+            let len2 = chord.length_squared();
+            let ok = len2 > 0.0
+                && (anchor + 1..end).all(|m| {
+                    let q = pos(at(m)) - pa;
+                    let t = q.dot(chord) / len2;
+                    t > 0.0 && t < 1.0 && q.perp_dot(chord).abs() / len2.sqrt() <= ctol
+                });
+            if !ok {
+                break;
             }
-            if k < n {
-                kept.push(v);
-            }
-            anchor = v;
+            best = end;
+            end += 1;
         }
+        let next = best;
+        if next > anchor + 1 {
+            extra.insert((at(anchor), at(next % n)), (anchor + 1..next).map(&at).collect());
+        }
+        if next < n {
+            kept.push(at(next));
+        }
+        anchor = next;
     }
     (kept, extra)
 }
@@ -522,18 +566,19 @@ fn triangulate_loops(
     g: &Grouping,
     polys: &[Polygon],
     pos: &impl Fn(u32) -> DVec2,
+    ctol: f64,
 ) -> Result<(Vec<[u32; 3]>, f64), String> {
     let mut tris = Vec::new();
     let mut total = 0.0;
     for (oi, &o) in g.outers.iter().enumerate() {
         let mut extra: ExtraPoints = FxHashMap::default();
-        let (outer_ids, e) = simplify_ring(&loops[o], pos);
+        let (outer_ids, e) = simplify_ring(&loops[o], pos, ctol);
         extra.extend(e);
         let mut ids: Vec<u32> = outer_ids;
         let mut flat: Vec<f64> = ids.iter().flat_map(|&v| [pos(v).x, pos(v).y]).collect();
         let mut hole_starts = Vec::new();
         for &h in &g.holes_of[oi] {
-            let (hole_ids, e) = simplify_ring(&loops[h], pos);
+            let (hole_ids, e) = simplify_ring(&loops[h], pos, ctol);
             extra.extend(e);
             hole_starts.push(ids.len());
             for &v in &hole_ids {
@@ -544,12 +589,15 @@ fn triangulate_loops(
         let idx = earcutr::earcut(&flat, &hole_starts, 2).map_err(|e| format!("earcut failed: {e:?}"))?;
         let poly_area = polys[oi].area();
         let mut tri_area = 0.0;
+        let first = tris.len();
         for t in idx.chunks_exact(3) {
             let (a, b, c) = (ids[t[0]], ids[t[1]], ids[t[2]]);
             let signed = (pos(b) - pos(a)).perp_dot(pos(c) - pos(a)) * 0.5;
-            tri_area += signed.abs();
             let tri = if signed >= 0.0 { [a, b, c] } else { [a, c, b] };
             reinsert_collinear(tri, &extra, &mut tris);
+        }
+        for t in &tris[first..] {
+            tri_area += ((pos(t[1]) - pos(t[0])).perp_dot(pos(t[2]) - pos(t[0])) * 0.5).abs();
         }
         total += tri_area;
         if (tri_area - poly_area).abs() > 1e-7 * poly_area.abs().max(1e-9) {

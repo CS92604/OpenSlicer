@@ -6,7 +6,9 @@
 //! the report; nothing here claims success silently.
 
 pub mod boolean;
+pub mod build;
 pub mod components;
+pub mod crop;
 pub mod cut;
 pub mod plane;
 pub mod poly2d;

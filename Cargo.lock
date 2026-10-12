@@ -1732,6 +1732,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openslicer-joints"
+version = "0.0.1"
+dependencies = [
+ "glam 0.30.10",
+ "openslicer-core",
+ "openslicer-geom",
+ "openslicer-split",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "openslicer-split"
 version = "0.0.1"
 dependencies = [

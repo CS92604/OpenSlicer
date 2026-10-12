@@ -1,0 +1,15 @@
+[package]
+name = "openslicer-joints"
+description = "Printable connector generation between split pieces"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+openslicer-core.workspace = true
+openslicer-geom.workspace = true
+openslicer-split.workspace = true
+glam.workspace = true
+thiserror.workspace = true

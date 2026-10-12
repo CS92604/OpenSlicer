@@ -92,7 +92,8 @@ pub fn boolean(a: &Mesh, b: &Mesh, op: BoolOp) -> Result<(Mesh, BoolReport), Boo
     if result.is_empty() {
         let ok = match op {
             BoolOp::Intersection => true,
-            BoolOp::Difference => (va - vb).abs() <= 1e-6 * va, // A fully consumed by B
+            // A can only vanish completely if B is at least as large.
+            BoolOp::Difference => vb >= va * (1.0 - 1e-6),
             BoolOp::Union => false,
         };
         return if ok { Ok((result, report)) } else { Err(BoolError::Verification("the result is unexpectedly empty".into())) };
@@ -177,6 +178,16 @@ mod tests {
         let sock = cylinder(Vec3::new(5.0, 5.0, 12.0), 4.5, 8.0, 48); // flush with the top face
         let (d, _) = boolean(&block, &sock, BoolOp::Difference).unwrap();
         assert!((d.stats().signed_volume - (64000.0 - sock.stats().signed_volume)).abs() < 1e-2);
+    }
+
+    #[test]
+    fn subtracting_a_larger_solid_that_contains_the_first_is_empty() {
+        let (inner, outer) = (cube_at(Vec3::ZERO, 10.0), cube_at(Vec3::ZERO, 20.0));
+        let (r, _) = boolean(&inner, &outer, BoolOp::Difference).unwrap();
+        assert!(r.is_empty());
+        // The reverse leaves a hollow shell and is not empty.
+        let (r, _) = boolean(&outer, &inner, BoolOp::Difference).unwrap();
+        assert!((r.stats().signed_volume - 7000.0).abs() < 1e-2);
     }
 
     #[test]
