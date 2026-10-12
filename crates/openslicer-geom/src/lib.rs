@@ -1,0 +1,17 @@
+//! Geometry engine: plane cutting with capping, planar regions, component
+//! separation and (in later modules) Booleans and repair.
+//!
+//! Every operation that changes a mesh returns a report that states whether the
+//! result is watertight and whether volume was conserved. Callers must look at
+//! the report; nothing here claims success silently.
+
+pub mod components;
+pub mod cut;
+pub mod plane;
+pub mod region;
+pub mod section;
+
+#[cfg(test)]
+pub(crate) mod tests_support;
+
+pub use plane::Plane;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/openslicer-core", "crates/openslicer-io", "crates/openslicer-app"]
+members = ["crates/openslicer-core", "crates/openslicer-io", "crates/openslicer-geom", "crates/openslicer-app"]
 
 [workspace.package]
 version = "0.0.1"
@@ -16,6 +16,12 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 openslicer-core = { path = "crates/openslicer-core" }
 openslicer-io = { path = "crates/openslicer-io" }
+openslicer-geom = { path = "crates/openslicer-geom" }
+rustc-hash = "2"
+earcutr = "0.5"
+boolmesh = { version = "0.2.1", features = ["rayon"] }
+i_overlay = "9"
+rayon = "1"
 
 [profile.release]
 lto = "thin"
