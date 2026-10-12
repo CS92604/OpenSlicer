@@ -4,7 +4,7 @@
 
 Written entirely in Rust. Runs locally: no account, no subscription, no cloud, no network. An open alternative to commercial large-model splitting tools such as LuBan 3D.
 
-> **Status: beta (0.1.0-beta.1).** The geometry engines, command-line tool and the desktop app (automatic, grid and manual-plane splitting, joints for thin shells, part labels, assembly playback, verified export, undo/redo, projects) work and are tested on real generated geometry. Several features are not built yet and a few are weak; both are listed plainly in [Limits and what is not built yet](#limits-and-what-is-not-built-yet). OpenSlicer reports a failed check instead of claiming success, but **always inspect exported parts in your slicer before printing**, and print a test joint first.
+> **Version 0.1.0.** The geometry engines, command-line tool and the desktop app (automatic, grid and manual-plane splitting, joints for thin shells, part labels, assembly playback, verified export, undo/redo, projects) work and are tested on real generated geometry. Several features are not built yet and a few are weak; both are listed plainly in [Limits and what is not built yet](#limits-and-what-is-not-built-yet). OpenSlicer reports a failed check instead of claiming success, but **always inspect exported parts in your slicer before printing**, and print a test joint first.
 
 ![A 900 mm wing split into 8 parts that fit a Prusa MK4: every check passed](docs/images/split-result.png)
 

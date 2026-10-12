@@ -1319,7 +1319,7 @@ impl OpenSlicerApp {
                     ui.add_space(8.0);
                     ui.label("Open-source tool for splitting oversized models into printable parts.");
                     ui.add_space(6.0);
-                    caption(ui, "Beta: splitting, connectors, verified export, projects and autosave.");
+                    caption(ui, "Splitting, connectors, labels, assembly playback, verified export, projects and autosave.");
                     caption(ui, "Alternative construction methods and image tools are available in openslicer-cli.");
                 });
             self.show_about = open;

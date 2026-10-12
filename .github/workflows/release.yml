@@ -1,13 +1,13 @@
 name: Release
 
 # Publishes ONE file: openslicer.exe (no installer, no archive).
-# Trigger by pushing a tag such as v0.1.0-beta.1, or run it manually.
+# Trigger by pushing a tag such as v0.1.0, or run it manually.
 on:
   workflow_dispatch:
     inputs:
       tag:
         description: Release tag to create (blank = build only, no release)
-        default: v0.1.0-beta.1
+        default: v0.1.0
   push:
     tags: ["v*"]
 
@@ -42,10 +42,10 @@ jobs:
           files: openslicer.exe
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
-          prerelease: ${{ contains(inputs.tag || github.ref_name, 'beta') || contains(inputs.tag || github.ref_name, 'alpha') || contains(inputs.tag || github.ref_name, 'rc') }}
-          generate_release_notes: true
+          prerelease: false
+          make_latest: true
+          generate_release_notes: false
           body: |
-            **OpenSlicer beta — single file, no installer.** Download `openslicer.exe` and run it.
+            Download `openslicer.exe` and run it. One file, no installer.
 
-            Beta software: see docs/known-limitations.md for what is and is not verified. Always inspect
-            the exported parts in your slicer before printing.
+            See the README for what it does, its known limits and what has not been verified yet.

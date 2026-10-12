@@ -1,6 +1,6 @@
 # Known limitations
 
-Honest status for 0.1.0-beta.1. The README's "Limits and what is not built yet" section is the summary; this file adds detail.
+Honest status for 0.1.0. The README's "Limits and what is not built yet" section is the summary; this file adds detail.
 
 ## Not built yet
 - **Interactive editing:** manual planes are axis-based with one tilt; no free 3D rotation handle, face picking, per-connector editing, or editing of cuts after a split (re-run it).
