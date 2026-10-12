@@ -1907,7 +1907,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openslicer-app"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "bytemuck",
  "eframe",
@@ -1925,7 +1925,7 @@ dependencies = [
 
 [[package]]
 name = "openslicer-cli"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "clap",
  "glam 0.30.10",
@@ -1942,14 +1942,14 @@ dependencies = [
 
 [[package]]
 name = "openslicer-core"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "glam 0.30.10",
 ]
 
 [[package]]
 name = "openslicer-fab"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "glam 0.30.10",
  "image",
@@ -1964,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "openslicer-geom"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "boolmesh",
  "earcutr",
@@ -1979,7 +1979,7 @@ dependencies = [
 
 [[package]]
 name = "openslicer-io"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "glam 0.30.10",
  "openslicer-core",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "openslicer-joints"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "glam 0.30.10",
  "openslicer-core",
@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "openslicer-project"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "glam 0.30.10",
  "openslicer-core",
@@ -2022,7 +2022,7 @@ dependencies = [
 
 [[package]]
 name = "openslicer-split"
-version = "0.0.1"
+version = "0.1.0-beta.1"
 dependencies = [
  "glam 0.30.10",
  "openslicer-core",

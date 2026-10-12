@@ -1,9 +1,14 @@
-name: Windows package
+name: Release
 
+# Publishes ONE file: openslicer.exe (no installer, no archive).
+# Trigger by pushing a tag such as v0.1.0-beta.1, or run it manually.
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: write
 
 jobs:
   windows:
@@ -14,16 +19,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --workspace --locked --release
-      - name: Build
-        run: cargo build --release --locked -p openslicer-app -p openslicer-cli
-      - name: Package
+      - name: Build (statically linked, single file)
+        run: cargo build --release --locked -p openslicer-app
+      - name: Name the file
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/OpenSlicer | Out-Null
-          Copy-Item target/release/openslicer.exe, target/release/openslicer-cli.exe, README.md, LICENSE-MIT, LICENSE-APACHE dist/OpenSlicer/
-          Copy-Item docs dist/OpenSlicer/docs -Recurse
-          Compress-Archive -Path dist/OpenSlicer -DestinationPath OpenSlicer-windows-x64.zip
+          Copy-Item target/release/openslicer.exe openslicer.exe
+          Get-FileHash openslicer.exe -Algorithm SHA256 | Format-List | Out-String | Write-Host
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenSlicer-windows-x64
-          path: OpenSlicer-windows-x64.zip
+          name: openslicer.exe
+          path: openslicer.exe
+          if-no-files-found: error
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: openslicer.exe
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true
+          body: |
+            **OpenSlicer beta — single file, no installer.** Download `openslicer.exe` and run it.
+
+            Beta software: see docs/known-limitations.md for what is and is not verified. Always inspect
+            the exported parts in your slicer before printing.

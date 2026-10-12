@@ -5,7 +5,7 @@
 OpenSlicer is written entirely in Rust. It runs locally, with no account, subscription, cloud service or network connection. It is intended as an open alternative to commercial large-model splitting tools such as LuBan 3D.
 
 > **Project status: pre-alpha.**
-> The geometry engines and the command-line tool are implemented and tested on real generated geometry: cutting, auto-tiling, connectors, nesting, alternative construction methods, Booleans, repair, hollowing, image tools, export with manifest and verification, project files. The desktop app opens STL/OBJ/3MF, inspects and transforms models, and has a **Split window** (automatic, grid or every-N-mm layouts; connector type, size and clearance; nesting; assembly check) that runs the same pipeline as the CLI in a background job, shows the parts in the viewport with a pass/fail summary, and exports the parts, instructions and verified manifest. Alternative construction methods, image tools, hollowing and Booleans are CLI-only for now. Nothing has been run on Windows yet. See [docs/known-limitations.md](docs/known-limitations.md).
+> The geometry engines and the command-line tool are implemented and tested on real generated geometry: cutting, auto-tiling, connectors, nesting, alternative construction methods, Booleans, repair, hollowing, image tools, export with manifest and verification, project files. The desktop app opens STL/OBJ/3MF, inspects and transforms models, and has a **Split window** (automatic, grid or every-N-mm layouts; connector type, size and clearance; nesting; assembly check) that runs the same pipeline as the CLI in a background job, shows the parts in the viewport with a pass/fail summary, and exports the parts, instructions and verified manifest. Alternative construction methods, image tools, hollowing and Booleans are CLI-only for now. The Windows `.exe` is built by CI but has not been run on a real Windows machine yet. See [docs/known-limitations.md](docs/known-limitations.md).
 
 ![OpenSlicer skeleton](docs/images/skeleton.png)
 
@@ -79,7 +79,7 @@ What the engines do (all verified by tests; see the crate tests for the exact cl
 
 ### Not tested yet
 
-OpenSlicer has so far been built and run only on Linux (under Xvfb with Mesa software OpenGL). It targets Windows 11 and uses no Linux-specific code, but **it has not yet been run on Windows**, and the Windows installer and release pipeline do not exist. Window title-bar theming and the Segoe UI font path are untested.
+OpenSlicer has so far been built and run only on Linux (under Xvfb with Mesa software OpenGL). It targets Windows 11 and uses no Linux-specific code, but **it has not yet been run on Windows by a person**; the release `.exe` is built and tested by GitHub Actions only. Window title-bar theming and the Segoe UI font path are untested.
 
 ---
 
@@ -187,8 +187,8 @@ The GUI uses `egui`/`eframe` with an OpenGL (glow) renderer. Meshes are uploaded
 | CLI | Done |
 | Desktop GUI: split, connectors, results, export | Done for the Split window (verified by running the app on Linux under software OpenGL). Exploded-view slider not verified interactively. Fab methods, image tools, hollow and Booleans are not in the GUI |
 | Undo/redo, light theme, searchable settings, autosave in the GUI | Planned |
-| CI workflow | Written, not yet run on GitHub |
-| Windows build, installer, release automation | Planned, untested on Windows |
+| CI workflow | Runs on every push (fmt, clippy, tests, release build on Ubuntu and Windows) |
+| Windows build and release | Beta: one statically linked `openslicer.exe` built by GitHub Actions (no installer). Built by CI, not yet run by a human on Windows |
 | Large-scale (automotive) validation | Planned; not yet attempted on a real hardtop-scale model |
 
 Status values are **Planned**, **In progress** and **Done**.
@@ -208,7 +208,9 @@ cargo run --release -p openslicer-app -- path/to/model.stl   # viewer
 cargo run --release -p openslicer-cli -- split path/to/model.stl -o out --connector pin
 ```
 
-Windows installer packaging does not exist yet.
+### Windows release
+
+Releases are **one file: `openslicer.exe`** (no installer, no archive, no Visual C++ redistributable; the C runtime is linked statically). Download it from the [Releases](https://github.com/CS92604/OpenSlicer/releases) page and run it. It needs a GPU driver with OpenGL 3.3. The command-line tool is not part of the release; build it from source (`cargo build --release -p openslicer-cli`).
 
 ---
 

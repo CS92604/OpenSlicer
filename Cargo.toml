@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/openslicer-core", "crates/openslicer-io", "crates/openslicer-geom", "crates/openslicer-split", "crates/openslicer-joints", "crates/openslicer-fab", "crates/openslicer-project", "crates/openslicer-cli", "crates/openslicer-app"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0-beta.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/CS92604/OpenSlicer"
@@ -35,8 +35,9 @@ roxmltree = "0.20"
 clap = { version = "4", features = ["derive"] }
 
 [profile.release]
-lto = "thin"
-codegen-units = 4
+lto = "fat"
+codegen-units = 1
+strip = true
 
 [profile.dev]
 opt-level = 2
