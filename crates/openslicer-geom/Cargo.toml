@@ -14,3 +14,5 @@ rustc-hash.workspace = true
 earcutr.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
+i_overlay.workspace = true
+boolmesh.workspace = true

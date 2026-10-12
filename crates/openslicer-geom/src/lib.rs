@@ -5,9 +5,11 @@
 //! result is watertight and whether volume was conserved. Callers must look at
 //! the report; nothing here claims success silently.
 
+pub mod boolean;
 pub mod components;
 pub mod cut;
 pub mod plane;
+pub mod poly2d;
 pub mod region;
 pub mod section;
 
