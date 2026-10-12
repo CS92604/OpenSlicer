@@ -27,18 +27,30 @@ $ openslicer-cli verify out
 checked 13 files in out
 all files match the manifest and are valid
 exit code: 0
-$ openslicer-cli split dome.stl -o dome_out --printer "prusa mk4" --connector pin
+$ openslicer-cli split dome.stl -o dome_out --printer "prusa mk4" --connector pin --labels inset
 dome: 6 parts from 3 cuts
   grid 2×3×1 rotated 0°
+  7 connectors, 0 loose parts
   all 6 parts fit the printer
   note: auto-tiling: 2×3×1 cells of 200×133×200 mm, grid rotated 0° (about 6 pieces; 12 layouts compared)
-  note: no connector between P01 and P02: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
-  note: no connector between P03 and P04: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
-  note: no connector between P05 and P06: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
-  note: no connector between P01 and P05: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
-  note: no connector between P02 and P06: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
-  note: no connector between P05 and P03: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
-  note: no connector between P06 and P04: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip, reduce the minimum wall, or choose a larger 
-  PROBLEM: connectors: 7 of 7 interfaces have no connector
-  wrote 8 files to dome_out (verified by re-import)
-exit code: 3
+  note: connectors: interface 1: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip
+  note: connectors: interface 2: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip
+  note: connectors: interface 3: the wall is only 4.0 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip
+  note: connectors: interface 4: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip
+  note: connectors: interface 5: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip
+  note: connectors: interface 6: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip
+  note: connectors: interface 7: the wall is only 4.1 mm thick; a connector needs at least 4.3 mm (smallest feature 1.5 mm + clearance + minimum wall on both sides). Use a lip
+  note: labels: 6 of 6 parts labelled (engraved (inset))
+  wrote 9 files to dome_out (verified by re-import)
+exit code: 0
+
+$ head -4 dome_out/dome_assembly.csv
+step,part,type,file,label_on_part,label_status,attaches_to,contact_area_mm2,connectors,connector_types,loose_parts,starts_subassembly,size_x_mm,size_y_mm,size_z_mm,volume_cm3,print_plate,fits_printer
+1,P04,piece,dome_P04.stl,P04-1,"placed: on the inside, 4 mm high, 4.0 mm of material behind",,,,,,yes,187.7,133.1,188.3,153.617,,yes
+2,P06,piece,dome_P06.stl,P06-2,"placed: on the inside, 4 mm high, 4.0 mm of material behind",P04,1244,C07,Finger joint (thin walls),,no,200.0,141.3,200.0,162.973,,yes
+3,P02,piece,dome_P02.stl,P02-3,"placed: on the inside, 4 mm high, 4.0 mm of material behind",P06,1244,C05,Finger joint (thin walls),,no,191.1,141.1,190.3,163.865,,yes
+
+$ openslicer-cli verify dome_out
+checked 8 files in dome_out
+all files match the manifest and are valid
+exit code: 0
