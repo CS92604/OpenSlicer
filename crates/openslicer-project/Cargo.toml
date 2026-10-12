@@ -1,0 +1,26 @@
+[package]
+name = "openslicer-project"
+description = "OpenSlicer pipeline, assembly planning, export with manifests, and project files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+openslicer-core.workspace = true
+openslicer-io.workspace = true
+openslicer-geom.workspace = true
+openslicer-split.workspace = true
+openslicer-joints.workspace = true
+openslicer-fab.workspace = true
+glam.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+roxmltree.workspace = true

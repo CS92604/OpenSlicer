@@ -14,7 +14,7 @@ use openslicer_core::control::{Cancelled, Control};
 use openslicer_core::Mesh;
 
 /// Which printer axis each grid axis may map to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OrientationPolicy {
     /// The model's up axis stays the printer's Z axis; only X and Y may swap. Pieces print flat, which is faster and sturdier.
     KeepUpright,

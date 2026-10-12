@@ -1,6 +1,6 @@
 //! Connector settings and per-kind defaults.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ConnectorKind {
     /// Round pin on one piece, matching socket in the other.
     Pin,
@@ -59,7 +59,7 @@ impl ConnectorKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AngleMode {
     /// Aligned to the cut boundary (tabs along it, dovetail grooves opening towards the nearest edge).
     Auto,
@@ -68,7 +68,7 @@ pub enum AngleMode {
 }
 
 /// What to do when the interface is too thin for the requested connector size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThinWallPolicy {
     /// Shrink the connector to fit (down to `min_feature`), or skip the interface with an explanation.
     ShrinkToFit,
@@ -76,7 +76,8 @@ pub enum ThinWallPolicy {
     Skip,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ConnectorSettings {
     pub kind: ConnectorKind,
     /// Main width/diameter in mm (pin diameter, tab width, dovetail width, puzzle head, pyramid base, claw width).
@@ -117,6 +118,12 @@ pub struct ConnectorSettings {
     pub thin_wall: ThinWallPolicy,
     /// Circle resolution.
     pub segments: usize,
+}
+
+impl Default for ConnectorSettings {
+    fn default() -> Self {
+        Self::new(ConnectorKind::Pin)
+    }
 }
 
 impl ConnectorSettings {

@@ -13,3 +13,4 @@ openslicer-geom.workspace = true
 openslicer-split.workspace = true
 glam.workspace = true
 thiserror.workspace = true
+serde.workspace = true
