@@ -61,7 +61,7 @@ pub fn plan_assembly(pieces: &[Piece], interfaces: &[Interface], connectors: &[C
         };
         remaining.retain(|&r| r != next);
         let attach_to: Vec<(usize, String, f64)> =
-            assembled.iter().filter_map(|&a| (area_between(next, a) > 0.0).then(|| (a, name_of(a), area_between(next, a)))).collect();
+            assembled.iter().filter(|&&a| area_between(next, a) > 0.0).map(|&a| (a, name_of(a), area_between(next, a))).collect();
         let partners: Vec<usize> = attach_to.iter().map(|(a, _, _)| *a).collect();
         let iface_involved = |ii: usize| {
             let i = &interfaces[ii];

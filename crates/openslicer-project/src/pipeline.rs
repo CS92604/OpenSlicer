@@ -115,21 +115,28 @@ fn plan_for(
             (t.plan.clone(), Some(summary), Some(t))
         }
         Layout::Grid { divisions, yaw_deg } => {
-            if divisions.iter().any(|&d| d == 0) {
+            if divisions.contains(&0) {
                 return Err(PipelineError::Invalid("grid divisions must be at least 1 on every axis".into()));
             }
             let f = frame_of(*yaw_deg);
             (grid_plan(extents(mesh, &f), &f, *divisions), None, None)
         }
         Layout::Modular { spacing, offset, yaw_deg } => {
-            if spacing.iter().flatten().any(|s| !(*s > 0.0)) {
+            if spacing.iter().flatten().any(|s| s.is_nan() || *s <= 0.0) {
                 return Err(PipelineError::Invalid("cut spacing must be positive".into()));
             }
             let f = frame_of(*yaw_deg);
             (modular_plan(extents(mesh, &f), &f, *spacing, *offset), None, None)
         }
         Layout::Brick { row_axis, along_axis, row_height, brick_length, stagger } => {
-            if *row_axis > 2 || *along_axis > 2 || row_axis == along_axis || !(*row_height > 0.0) || !(*brick_length > 0.0) {
+            if *row_axis > 2
+                || *along_axis > 2
+                || row_axis == along_axis
+                || row_height.is_nan()
+                || *row_height <= 0.0
+                || brick_length.is_nan()
+                || *brick_length <= 0.0
+            {
                 return Err(PipelineError::Invalid("the brick layout needs two different axes and positive sizes".into()));
             }
             let f = GridFrame::WORLD;

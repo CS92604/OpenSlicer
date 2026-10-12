@@ -91,6 +91,9 @@ pub struct PartEntry {
     pub name: String,
     /// `"piece"` or `"loose"` (for example a dowel).
     pub kind: String,
+    /// Descriptive label from fabrication methods, for example `Layer 4`.
+    #[serde(default)]
+    pub label: Option<String>,
     pub file: String,
     pub sha256: String,
     pub triangles: usize,
@@ -115,6 +118,15 @@ pub struct PlateEntry {
     pub triangles: usize,
     pub parts: Vec<String>,
     pub height_mm: f64,
+}
+
+/// A 2D cutting outline (SVG, millimetres) for flat stock.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OutlineEntry {
+    pub part: String,
+    pub file: String,
+    pub sha256: String,
+    pub thickness_mm: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -179,6 +191,11 @@ pub struct Manifest {
     pub printer: PrinterEntry,
     pub parts: Vec<PartEntry>,
     pub plates: Vec<PlateEntry>,
+    #[serde(default)]
+    pub outlines: Vec<OutlineEntry>,
+    /// Fabrication method (`stack`, `interlock`, ...) or `split`.
+    #[serde(default)]
+    pub method: String,
     pub interfaces: Vec<InterfaceEntry>,
     pub connectors: Vec<ConnectorEntry>,
     pub assembly: Vec<StepEntry>,
@@ -237,33 +254,12 @@ pub fn export(
     let existed = dir.exists();
     let result = export_into(outcome, printer, opts, dir, ctl);
     if let Err(e) = &result {
-        // A failed or cancelled export leaves nothing behind, except a destination that was refused as non-empty.
-        let refused = matches!(e, ExportError::Invalid(m) if m.contains("is not empty"));
-        if !refused {
-            if existed {
-                if let Ok(rd) = std::fs::read_dir(dir) {
-                    for entry in rd.flatten() {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
-                }
-            } else {
-                let _ = std::fs::remove_dir_all(dir);
-            }
-        }
+        cleanup_after_failure(e, existed, dir);
     }
     result
 }
 
-fn export_into(
-    outcome: &SplitOutcome,
-    printer: &PrinterProfile,
-    opts: &ExportOptions,
-    dir: &Path,
-    ctl: &Control,
-) -> Result<ExportReport, ExportError> {
-    if outcome.pieces.is_empty() {
-        return Err(ExportError::Invalid("there are no parts to export".into()));
-    }
+fn prepare_dir(opts: &ExportOptions, dir: &Path) -> Result<(), ExportError> {
     if !opts.name_template.contains("{name}") && !opts.name_template.contains("{id}") {
         return Err(ExportError::Invalid("the file name template must contain {name} or {id} so each part gets its own file".into()));
     }
@@ -273,14 +269,22 @@ fn export_into(
             return Err(ExportError::Invalid(format!("{} is not empty; choose an empty folder", dir.display())));
         }
     }
-    std::fs::create_dir_all(dir).map_err(|e| ExportError::Fs(dir.to_path_buf(), e))?;
+    std::fs::create_dir_all(dir).map_err(|e| ExportError::Fs(dir.to_path_buf(), e))
+}
 
-    let usable = printer.usable();
-    let all: Vec<(&Piece, &str)> = outcome.pieces.iter().map(|p| (p, "piece")).chain(outcome.loose.iter().map(|p| (p, "loose"))).collect();
+/// Writes one file per part; returns the manifest entries and the file names.
+fn write_parts(
+    all: &[(&Piece, &str)],
+    fits: &dyn Fn(&Piece) -> bool,
+    usable: DVec3,
+    opts: &ExportOptions,
+    dir: &Path,
+    ctl: &Control,
+) -> Result<(Vec<PartEntry>, Vec<String>), ExportError> {
     let model = sanitize(&opts.model_name);
     let ext = opts.format.extension();
     let mut names: Vec<String> = Vec::new();
-    for (p, _) in &all {
+    for (p, _) in all {
         let stem = opts.name_template.replace("{model}", &model).replace("{name}", &sanitize(&p.name)).replace("{id}", &p.id.to_string());
         let file = format!("{}.{ext}", sanitize(&stem));
         if names.contains(&file) {
@@ -288,13 +292,12 @@ fn export_into(
         }
         names.push(file);
     }
-
     let mut files = Vec::new();
     let mut parts = Vec::new();
     for (i, ((piece, kind), file)) in all.iter().zip(&names).enumerate() {
         ctl.check()?;
         ctl.report(i as f32 / all.len() as f32 * 0.8, &format!("Writing {}", piece.name));
-        let fits_in_some = outcome.fits.iter().find(|f| f.piece_id == piece.id && f.name == piece.name).is_none_or(|f| f.fits);
+        let fits_in_some = fits(piece);
         let (mesh, rot, off) = if opts.print_orientation {
             let down: Vec<DVec3> = Vec::new();
             match print_pose(piece, usable, &down) {
@@ -319,6 +322,7 @@ fn export_into(
             id: piece.id,
             name: piece.name.clone(),
             kind: (*kind).into(),
+            label: None,
             file: file.clone(),
             sha256: hash_file(&path)?,
             triangles: stats.triangle_count,
@@ -333,6 +337,26 @@ fn export_into(
         });
         files.push(file.clone());
     }
+    Ok((parts, files))
+}
+
+fn export_into(
+    outcome: &SplitOutcome,
+    printer: &PrinterProfile,
+    opts: &ExportOptions,
+    dir: &Path,
+    ctl: &Control,
+) -> Result<ExportReport, ExportError> {
+    if outcome.pieces.is_empty() {
+        return Err(ExportError::Invalid("there are no parts to export".into()));
+    }
+    prepare_dir(opts, dir)?;
+    let usable = printer.usable();
+    let all: Vec<(&Piece, &str)> = outcome.pieces.iter().map(|p| (p, "piece")).chain(outcome.loose.iter().map(|p| (p, "loose"))).collect();
+    let model = sanitize(&opts.model_name);
+    let ext = opts.format.extension();
+    let fits = |p: &Piece| outcome.fits.iter().find(|f| f.piece_id == p.id && f.name == p.name).is_none_or(|f| f.fits);
+    let (parts, mut files) = write_parts(&all, &fits, usable, opts, dir, ctl)?;
 
     // Plates.
     let mut plates = Vec::new();
@@ -391,16 +415,11 @@ fn export_into(
         model_name: opts.model_name.clone(),
         format: opts.format,
         print_orientation: opts.print_orientation,
-        printer: PrinterEntry {
-            name: printer.name.clone(),
-            build_volume: printer.build_volume,
-            margin: printer.margin,
-            usable: v3(usable),
-            joint_clearance: printer.joint_clearance,
-            material: printer.material.clone(),
-        },
+        printer: printer_entry(printer),
         parts,
         plates,
+        outlines: Vec::new(),
+        method: "split".into(),
         interfaces: outcome
             .interfaces
             .iter()
@@ -437,11 +456,150 @@ fn export_into(
             cut_count: outcome.cut_count,
         },
     };
+    finish_export(manifest, files, dir, ctl)
+}
+
+/// SVG of a flat part's outline (millimetres, even-odd fill so holes cut out).
+pub fn outline_svg(o: &openslicer_fab::Outline) -> String {
+    let (mut lo, mut hi) = (glam::DVec2::splat(f64::MAX), glam::DVec2::splat(f64::MIN));
+    for p in o.polygons.iter().flat_map(|p| p.outer.iter()) {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    let mut d = String::new();
+    for poly in &o.polygons {
+        for ring in std::iter::once(&poly.outer).chain(poly.holes.iter()) {
+            for (i, p) in ring.iter().enumerate() {
+                use std::fmt::Write;
+                let _ = write!(d, "{}{:.3},{:.3} ", if i == 0 { "M" } else { "L" }, p.x - lo.x, hi.y - p.y);
+            }
+            d.push_str("Z ");
+        }
+    }
+    let (w, h) = (hi.x - lo.x, hi.y - lo.y);
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w:.3}mm\" height=\"{h:.3}mm\" viewBox=\"0 0 {w:.3} {h:.3}\">\
+         <!-- sheet thickness {t:.2} mm -->\
+         <path d=\"{d}\" fill=\"none\" stroke=\"#ff0000\" stroke-width=\"0.1\" fill-rule=\"evenodd\"/></svg>",
+        t = o.thickness
+    )
+}
+
+/// Exports the parts of a fabrication method (stack, interlock, blocks, plates, wireframe, relief, image tools)
+/// with the same manifest and verification as a split. Flat parts also get an SVG outline for laser or CNC cutting.
+pub fn export_fab(
+    result: &openslicer_fab::FabResult,
+    printer: &PrinterProfile,
+    opts: &ExportOptions,
+    dir: &Path,
+    ctl: &Control,
+) -> Result<ExportReport, ExportError> {
+    let existed = dir.exists();
+    let r = export_fab_into(result, printer, opts, dir, ctl);
+    if let Err(e) = &r {
+        cleanup_after_failure(e, existed, dir);
+    }
+    r
+}
+
+fn export_fab_into(
+    result: &openslicer_fab::FabResult,
+    printer: &PrinterProfile,
+    opts: &ExportOptions,
+    dir: &Path,
+    ctl: &Control,
+) -> Result<ExportReport, ExportError> {
+    if result.parts.is_empty() {
+        return Err(ExportError::Invalid("there are no parts to export".into()));
+    }
+    prepare_dir(opts, dir)?;
+    let usable = printer.usable();
+    let all: Vec<(&Piece, &str)> = result.parts.iter().map(|p| (&p.piece, "piece")).collect();
+    let fits = |p: &Piece| best_orientation(&p.mesh, usable, &[]).is_some();
+    let (mut parts, mut files) = write_parts(&all, &fits, usable, opts, dir, ctl)?;
+    let model = sanitize(&opts.model_name);
+    let mut outlines = Vec::new();
+    for (entry, part) in parts.iter_mut().zip(&result.parts) {
+        entry.label = Some(part.label.clone());
+        if let Some(o) = &part.outline {
+            let file = format!("{}_{}_outline.svg", model, sanitize(&part.piece.name));
+            write_atomic(&dir.join(&file), outline_svg(o).as_bytes())?;
+            outlines.push(OutlineEntry {
+                part: part.piece.name.clone(),
+                sha256: hash_file(&dir.join(&file))?,
+                file: file.clone(),
+                thickness_mm: o.thickness,
+            });
+            files.push(file);
+        }
+    }
+    let rep = &result.report;
+    let mut notes = rep.notes.clone();
+    notes.push(format!("parts hold {:.1}% of the source volume", rep.fill_ratio * 100.0));
+    if let Some(d) = rep.max_deviation {
+        notes.push(format!("surface deviates from the source by at most {d:.2} mm"));
+    }
+    let manifest = Manifest {
+        manifest_version: MANIFEST_VERSION,
+        generator: format!("OpenSlicer {}", env!("CARGO_PKG_VERSION")),
+        model_name: opts.model_name.clone(),
+        format: opts.format,
+        print_orientation: opts.print_orientation,
+        printer: printer_entry(printer),
+        parts,
+        plates: Vec::new(),
+        outlines,
+        method: rep.method.clone(),
+        interfaces: Vec::new(),
+        connectors: Vec::new(),
+        assembly: Vec::new(),
+        instructions: None,
+        validation: Validation {
+            valid: rep.is_valid(),
+            problems: rep.problems.clone(),
+            notes,
+            source_volume_mm3: rep.source_volume,
+            source_watertight: true,
+            cut_count: 0,
+        },
+    };
+    finish_export(manifest, files, dir, ctl)
+}
+
+fn printer_entry(printer: &PrinterProfile) -> PrinterEntry {
+    PrinterEntry {
+        name: printer.name.clone(),
+        build_volume: printer.build_volume,
+        margin: printer.margin,
+        usable: v3(printer.usable()),
+        joint_clearance: printer.joint_clearance,
+        material: printer.material.clone(),
+    }
+}
+
+fn cleanup_after_failure(e: &ExportError, existed: bool, dir: &Path) {
+    // A failed or cancelled export leaves nothing behind, except a destination that was refused as non-empty.
+    let refused = matches!(e, ExportError::Invalid(m) if m.contains("is not empty"));
+    if refused {
+        return;
+    }
+    if existed {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for entry in rd.flatten() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    } else {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Writes the manifest, verifies everything that was written, and removes the manifest again if verification fails.
+fn finish_export(manifest: Manifest, mut files: Vec<String>, dir: &Path, ctl: &Control) -> Result<ExportReport, ExportError> {
     let json = serde_json::to_vec_pretty(&manifest).map_err(|e| ExportError::Invalid(e.to_string()))?;
     let manifest_path = dir.join(MANIFEST_NAME);
     write_atomic(&manifest_path, &json)?;
     files.push(MANIFEST_NAME.to_string());
-
     ctl.report(0.9, "Verifying the exported files");
     let verification = verify_export(dir);
     if !verification.is_ok() {
@@ -568,6 +726,14 @@ pub fn verify_export(dir: &Path) -> VerifyReport {
                 }
             }
             Err(e) => rep.problems.push(format!("{}: {e}", pl.file)),
+        }
+    }
+    for o in &manifest.outlines {
+        rep.files_checked += 1;
+        match hash_file(&dir.join(&o.file)) {
+            Ok(h) if h == o.sha256 => {}
+            Ok(_) => rep.problems.push(format!("{}: the file changed after it was exported (hash mismatch)", o.file)),
+            Err(e) => rep.problems.push(e.to_string()),
         }
     }
     if let Some(f) = &manifest.instructions {
@@ -749,5 +915,32 @@ mod tests {
         let r = export(&out, &printer, &ExportOptions::default(), &temp_dir("cancel"), &ctl);
         assert!(matches!(r, Err(ExportError::Cancelled(_))));
         assert!(!temp_dir("cancel").exists(), "a cancelled export leaves nothing behind");
+    }
+
+    #[test]
+    fn fab_results_export_with_outlines_and_labels() {
+        use openslicer_fab::stack::{stack, StackSettings};
+        let mut m = Mesh::cuboid(Vec3::new(120.0, 80.0, 30.0));
+        m.translate(Vec3::new(60.0, 40.0, 15.0));
+        let printer = PrinterProfile::default();
+        let res = stack(&m, &StackSettings { layer_thickness: 10.0, ..StackSettings::new(printer.usable()) }, &Control::none()).unwrap();
+        let dir = temp_dir("fab");
+        let rep =
+            export_fab(&res, &printer, &ExportOptions { model_name: "box".into(), ..Default::default() }, &dir, &Control::none()).unwrap();
+        assert!(rep.verification.is_ok(), "{:?}", rep.verification);
+        assert_eq!(rep.manifest.method, res.report.method);
+        assert_eq!(rep.manifest.parts.len(), res.parts.len());
+        assert!(rep.manifest.parts.iter().all(|p| p.label.as_deref().is_some_and(|l| l.starts_with("Layer"))));
+        assert_eq!(rep.manifest.outlines.len(), res.parts.len(), "every layer has a cutting outline");
+        let svg = std::fs::read_to_string(dir.join(&rep.manifest.outlines[0].file)).unwrap();
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        let dim = |name: &str| doc.root_element().attribute(name).unwrap().trim_end_matches("mm").parse::<f64>().unwrap();
+        let (mut d, e) = ([dim("width"), dim("height")], 1e-3);
+        d.sort_by(f64::total_cmp);
+        assert!((d[0] - 80.0).abs() < e && (d[1] - 120.0).abs() < e, "{d:?}");
+        // Tampering with an outline is caught too.
+        std::fs::write(dir.join(&rep.manifest.outlines[0].file), "<svg/>").unwrap();
+        assert!(verify_export(&dir).problems.iter().any(|p| p.contains("hash")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
